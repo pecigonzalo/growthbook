@@ -1,11 +1,14 @@
 import { FeatureInterface } from "back-end/types/feature";
 import { useState } from "react";
 import { SDKLanguage } from "back-end/types/sdk-connection";
-import Modal from "../Modal";
-import { DocLink } from "../DocLink";
-import BooleanFeatureCodeSnippet from "../SyntaxHighlighting/Snippets/BooleanFeatureCodeSnippet";
-import MultivariateFeatureCodeSnippet from "../SyntaxHighlighting/Snippets/MultivariateFeatureCodeSnippet";
-import { languageMapping } from "./SDKConnections/SDKLanguageLogo";
+import Modal from "@/components/Modal";
+import { DocLink } from "@/components/DocLink";
+import BooleanFeatureCodeSnippet from "@/components/SyntaxHighlighting/Snippets/BooleanFeatureCodeSnippet";
+import MultivariateFeatureCodeSnippet from "@/components/SyntaxHighlighting/Snippets/MultivariateFeatureCodeSnippet";
+import {
+  LanguageFilter,
+  languageMapping,
+} from "./SDKConnections/SDKLanguageLogo";
 import SDKLanguageSelector from "./SDKConnections/SDKLanguageSelector";
 import InitialSDKConnectionForm from "./SDKConnections/InitialSDKConnectionForm";
 
@@ -22,7 +25,9 @@ export default function FeatureImplementationModal({
 }: Props) {
   const [language, setLanguage] = useState<SDKLanguage>("javascript");
   const [fullSnippet, setFullSnippet] = useState(false);
-
+  const [languageFilter, setLanguageFilter] = useState<LanguageFilter>(
+    "popular"
+  );
   const codeType = feature.valueType === "boolean" ? "boolean" : "multivariate";
 
   if (fullSnippet) {
@@ -33,6 +38,7 @@ export default function FeatureImplementationModal({
 
   return (
     <Modal
+      trackingEventModalType=""
       open={true}
       close={close}
       size="lg"
@@ -46,6 +52,8 @@ export default function FeatureImplementationModal({
           setValue={([language]) => setLanguage(language)}
           multiple={false}
           includeOther={false}
+          languageFilter={languageFilter}
+          setLanguageFilter={setLanguageFilter}
         />
         <h3 className="mt-4">
           {languageMapping[language]?.label} Usage Instructions

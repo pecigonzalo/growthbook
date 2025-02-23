@@ -1,6 +1,8 @@
-import React from "react";
 import dynamic from "next/dynamic";
+import { useEffect, useState } from "react";
+import { Ace } from "ace-builds";
 import { useAppearanceUITheme } from "@/services/AppearanceUIThemeProvider";
+import { CursorData } from "@/components/Segments/SegmentForm";
 import Field, { FieldProps } from "./Field";
 
 const AceEditor = dynamic(
@@ -31,8 +33,12 @@ export type Props = Omit<
   language: Language;
   value: string;
   setValue: (value: string) => void;
+  setCursorData?: (data: CursorData) => void;
   minLines?: number;
   maxLines?: number;
+  fullHeight?: boolean;
+  onCtrlEnter?: () => void;
+  resizeDependency?: boolean;
 };
 
 const LIGHT_THEME = "textmate";
@@ -43,39 +49,76 @@ export default function CodeTextArea({
   value,
   setValue,
   placeholder,
-  minLines = 4,
+  minLines = 10,
   maxLines = 50,
+  setCursorData,
+  fullHeight,
+  onCtrlEnter,
+  resizeDependency,
   ...otherProps
 }: Props) {
   // eslint-disable-next-line
   const fieldProps = otherProps as any;
 
-  const semicolonWarning =
-    "Warning: Please remove any terminating semicolons. GrowthBook uses Common Table Expressions that will break from terminating semicolons.";
-
-  if (language === "sql" && value.includes(";")) {
-    otherProps.error = semicolonWarning;
-  }
-
   const { theme } = useAppearanceUITheme();
+
+  const [editor, setEditor] = useState<null | Ace.Editor>(null);
+
+  // HACK: AceEditor doesn't automatically resize when the parent div resizes
+  // Also because we dynamically load the AceEditor component, we can't use
+  // useRef to get a reference to the editor object, which would allow us to
+  // call the resize() method on the editor object. So instead we change the
+  // height ever so slightly whenever the resizeDependency variable changes.
+  const heightProps = fullHeight
+    ? resizeDependency
+      ? { height: "99.999%" }
+      : { height: "100%" }
+    : { minLines, maxLines };
+
+  useEffect(() => {
+    if (!editor) return;
+    if (!onCtrlEnter) return;
+
+    editor.commands.bindKey(
+      {
+        win: "Ctrl-enter",
+        mac: "Command-enter",
+      },
+      {
+        exec: onCtrlEnter,
+        name: "ctrl-enter",
+      }
+    );
+  }, [editor, onCtrlEnter]);
 
   return (
     <Field
       {...fieldProps}
+      containerClassName={fullHeight ? "h-100" : ""}
       render={(id) => {
         return (
           <>
-            <div className="border rounded">
+            <div className={`border rounded ${fullHeight ? "h-100" : ""}`}>
               <AceEditor
                 name={id}
+                onLoad={(e) => setEditor(e)}
                 mode={language}
                 theme={theme === "light" ? LIGHT_THEME : DARK_THEME}
                 width="inherit"
                 value={value}
                 onChange={(newValue) => setValue(newValue)}
                 placeholder={placeholder}
-                minLines={minLines}
-                maxLines={maxLines}
+                fontSize="1em"
+                {...heightProps}
+                readOnly={fieldProps.disabled}
+                onCursorChange={(e) =>
+                  setCursorData &&
+                  setCursorData({
+                    row: e.cursor.row,
+                    column: e.cursor.column,
+                    input: e.cursor.document.$lines,
+                  })
+                }
               />
             </div>
           </>

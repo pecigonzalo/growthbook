@@ -12,51 +12,22 @@ import type {
 import { GrowthBook } from "@growthbook/growthbook";
 
 export type GrowthBookContextValue = {
-  growthbook?: GrowthBook;
+  growthbook: GrowthBook;
 };
 export interface WithRunExperimentProps {
   runExperiment: <T>(exp: Experiment<T>) => Result<T>;
 }
+/** @deprecated */
 export type GrowthBookSSRData = {
   attributes: Record<string, any>;
   features: Record<string, FeatureDefinition>;
 };
 
 export const GrowthBookContext = React.createContext<GrowthBookContextValue>(
-  {}
+  {} as GrowthBookContextValue
 );
 
-function run<T>(exp: Experiment<T>, growthbook?: GrowthBook): Result<T> {
-  if (!growthbook) {
-    return {
-      featureId: null,
-      value: exp.variations[0],
-      variationId: 0,
-      inExperiment: false,
-      hashUsed: false,
-      hashAttribute: exp.hashAttribute || "id",
-      hashValue: "",
-    };
-  }
-  return growthbook.run(exp);
-}
-function feature<T extends JSONValue = any>(
-  id: string,
-  growthbook?: GrowthBook
-): FeatureResult<T | null> {
-  if (!growthbook) {
-    return {
-      value: null,
-      on: false,
-      off: true,
-      source: "unknownFeature",
-      ruleId: "",
-    };
-  }
-  return growthbook.evalFeature<T>(id);
-}
-
-// Get features from API and targeting attributes during SSR
+/** @deprecated */
 export async function getGrowthBookSSRData(
   context: Context
 ): Promise<GrowthBookSSRData> {
@@ -79,7 +50,7 @@ export async function getGrowthBookSSRData(
   return data;
 }
 
-// Populate the GrowthBook instance in context from the SSR props
+/** @deprecated */
 export function useGrowthBookSSR(data: GrowthBookSSRData) {
   const gb = useGrowthBook();
 
@@ -94,19 +65,21 @@ export function useGrowthBookSSR(data: GrowthBookSSRData) {
 
 export function useExperiment<T>(exp: Experiment<T>): Result<T> {
   const { growthbook } = React.useContext(GrowthBookContext);
-  return run(exp, growthbook);
+  return growthbook.run(exp);
 }
 
 export function useFeature<T extends JSONValue = any>(
   id: string
 ): FeatureResult<T | null> {
   const growthbook = useGrowthBook();
-  return feature(id, growthbook);
+  return growthbook.evalFeature<T>(id);
 }
 
-export function useFeatureIsOn(id: string): boolean {
-  const growthbook = useGrowthBook();
-  return growthbook ? growthbook.isOn(id) : false;
+export function useFeatureIsOn<
+  AppFeatures extends Record<string, any> = Record<string, any>
+>(id: string & keyof AppFeatures): boolean {
+  const growthbook = useGrowthBook<AppFeatures>();
+  return growthbook.isOn(id);
 }
 
 export function useFeatureValue<T extends JSONValue = any>(
@@ -114,14 +87,19 @@ export function useFeatureValue<T extends JSONValue = any>(
   fallback: T
 ): WidenPrimitives<T> {
   const growthbook = useGrowthBook();
-  return growthbook
-    ? growthbook.getFeatureValue(id, fallback)
-    : (fallback as WidenPrimitives<T>);
+  return growthbook.getFeatureValue(id, fallback);
 }
 
-export function useGrowthBook() {
+export function useGrowthBook<
+  AppFeatures extends Record<string, any> = Record<string, any>
+>(): GrowthBook<AppFeatures> {
   const { growthbook } = React.useContext(GrowthBookContext);
-  return growthbook;
+
+  if (!growthbook) {
+    throw new Error("Missing or invalid GrowthBookProvider");
+  }
+
+  return growthbook as GrowthBook<AppFeatures>;
 }
 
 export function FeaturesReady({
@@ -134,17 +112,22 @@ export function FeaturesReady({
   fallback?: React.ReactNode;
 }) {
   const gb = useGrowthBook();
-  const [ready, setReady] = React.useState(gb ? gb.ready : false);
+  const [hitTimeout, setHitTimeout] = React.useState(false);
+  const ready = gb ? gb.ready : false;
   React.useEffect(() => {
     if (timeout && !ready) {
       const timer = setTimeout(() => {
-        setReady(true);
+        gb &&
+          gb.log("FeaturesReady timed out waiting for features to load", {
+            timeout,
+          });
+        setHitTimeout(true);
       }, timeout);
       return () => clearTimeout(timer);
     }
-  }, [timeout, ready]);
+  }, [timeout, ready, gb]);
 
-  return ready ? children : fallback || null;
+  return <>{ready || hitTimeout ? children : fallback || null}</>;
 }
 
 export function IfFeatureEnabled({
@@ -177,7 +160,7 @@ export const withRunExperiment = <P extends WithRunExperimentProps>(
         return (
           <Component
             {...(props as P)}
-            runExperiment={(exp) => run(exp, growthbook)}
+            runExperiment={(exp) => growthbook.run(exp)}
           />
         );
       }}
@@ -189,7 +172,7 @@ withRunExperiment.displayName = "WithRunExperiment";
 
 export const GrowthBookProvider: React.FC<
   React.PropsWithChildren<{
-    growthbook?: GrowthBook;
+    growthbook: GrowthBook;
   }>
 > = ({ children, growthbook }) => {
   // Tell growthbook how to re-render our app (for dev mode integration)

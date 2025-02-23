@@ -3,14 +3,15 @@ import { useRouter } from "next/router";
 import Link from "next/link";
 import { ReportInterface } from "back-end/types/report";
 import { ExperimentInterface } from "back-end/types/experiment";
-import LoadingOverlay from "../components/LoadingOverlay";
-import { datetime, ago } from "../services/dates";
-import { useAddComputedFields, useSearch } from "../services/search";
-import Tooltip from "../components/Tooltip/Tooltip";
-import useApi from "../hooks/useApi";
-import Toggle from "../components/Forms/Toggle";
-import { useUser } from "../services/UserContext";
-import Field from "../components/Forms/Field";
+import { datetime, ago } from "shared/dates";
+import LoadingOverlay from "@/components/LoadingOverlay";
+import { useAddComputedFields, useSearch } from "@/services/search";
+import Tooltip from "@/components/Tooltip/Tooltip";
+import useApi from "@/hooks/useApi";
+import Toggle from "@/components/Forms/Toggle";
+import { useUser } from "@/services/UserContext";
+import Field from "@/components/Forms/Field";
+import ShareStatusBadge from "@/components/Report/ShareStatusBadge";
 
 const ReportsPage = (): React.ReactElement => {
   const router = useRouter();
@@ -35,9 +36,17 @@ const ReportsPage = (): React.ReactElement => {
   const reports = useAddComputedFields(
     data?.reports,
     (r) => ({
-      userName: getUserDisplay(r.userId) || "",
-      experimentName: experimentNames.get(r.experimentId) || "",
-      status: r.status === "private" ? "private" : "published",
+      userName: r.userId ? getUserDisplay(r.userId) : "",
+      experimentName: r.experimentId ? experimentNames.get(r.experimentId) : "",
+      shareLevel: (r.type === "experiment"
+        ? r.status === "private"
+          ? "private"
+          : "organization"
+        : r.shareLevel === "public"
+        ? "public"
+        : r.shareLevel === "private"
+        ? "private"
+        : "organization") as "public" | "organization" | "private",
     }),
     [experimentNames]
   );
@@ -55,7 +64,13 @@ const ReportsPage = (): React.ReactElement => {
     },
     [onlyMyReports, userId]
   );
-  const { items, searchInputProps, isFiltered, SortableTH } = useSearch({
+  const {
+    items,
+    searchInputProps,
+    isFiltered,
+    SortableTH,
+    pagination,
+  } = useSearch({
     items: reports,
     localStorageKey: "reports",
     defaultSortField: "dateUpdated",
@@ -68,6 +83,7 @@ const ReportsPage = (): React.ReactElement => {
       "dateUpdated",
     ],
     filterResults,
+    pageSize: 20,
   });
 
   if (error) {
@@ -86,8 +102,8 @@ const ReportsPage = (): React.ReactElement => {
       <div className="container p-4">
         <h1>Reports</h1>
         <p>
-          A report is an ad-hoc analysis of an experiment. Use them to explore
-          results in an isolated environment without affecting the main
+          A report is a standalone ad-hoc analysis of an experiment. Use them to
+          explore results in an isolated environment without affecting the main
           experiment.
         </p>
 
@@ -96,17 +112,17 @@ const ReportsPage = (): React.ReactElement => {
           <li>Go to an experiment</li>
           <li>Click on the Results tab</li>
           <li>Open the more menu (3 dots next to the Update button)</li>
-          <li>Select &quot;ad-hoc report&quot;</li>
+          <li>Select &quot;New Custom Report&quot;</li>
         </ol>
 
-        <Link href="/experiments">
-          <a className="btn btn-primary mb-2">Go to Experiments</a>
+        <Link href="/experiments" className="btn btn-primary mb-2">
+          Go to Experiments
         </Link>
 
         <p>
-          <em>Note:</em> you will not see the &quot;ad-hoc report&quot; option
-          if your experiment does not have results yet or is not hooked up to a
-          valid data source.
+          <em>Note:</em> you will not see the &quot;New Custom Report&quot;
+          option if your experiment does not have results yet or is not hooked
+          up to a valid data source.
         </p>
       </div>
     );
@@ -157,11 +173,13 @@ const ReportsPage = (): React.ReactElement => {
                 router.push(`/report/${report.id}`);
               }}
               style={{ cursor: "pointer" }}
-              className=""
             >
               <td>
-                <Link href={`/report/${report.id}`}>
-                  <a className={`text-dark font-weight-bold`}>{report.title}</a>
+                <Link
+                  href={`/report/${report.id}`}
+                  className={`text-dark font-weight-bold`}
+                >
+                  {report.title}
                 </Link>
               </td>
               <td
@@ -175,7 +193,16 @@ const ReportsPage = (): React.ReactElement => {
               >
                 {report.description}
               </td>
-              <td>{report.status}</td>
+              <td>
+                <ShareStatusBadge
+                  shareLevel={report.shareLevel}
+                  editLevel={
+                    report.type === "experiment-snapshot"
+                      ? report.editLevel
+                      : "organization"
+                  }
+                />
+              </td>
               <td>{report.experimentName}</td>
               <td>{report.userName}</td>
               <td
@@ -200,6 +227,7 @@ const ReportsPage = (): React.ReactElement => {
           )}
         </tbody>
       </table>
+      {pagination}
     </div>
   );
 };

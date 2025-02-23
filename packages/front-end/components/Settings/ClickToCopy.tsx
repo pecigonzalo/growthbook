@@ -1,35 +1,64 @@
 import { HiOutlineClipboard, HiOutlineClipboardCheck } from "react-icons/hi";
+import clsx from "clsx";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
-import { SimpleTooltip } from "../SimpleTooltip/SimpleTooltip";
+import { SimpleTooltip } from "@/components/SimpleTooltip/SimpleTooltip";
 
 type Props = {
-  children: string;
+  compact?: boolean;
+  children?: string;
+  className?: string;
+  valueToCopy?: string;
 };
 
-export default function ClickToCopy({ children }: Props) {
+export default function ClickToCopy({
+  compact,
+  children,
+  className = "",
+  valueToCopy,
+}: Props) {
   const { performCopy, copySuccess, copySupported } = useCopyToClipboard({
     timeout: 800,
   });
   return (
-    <div className="d-flex align-items-center position-relative">
+    <div
+      className={clsx("d-flex align-items-center position-relative", className)}
+    >
       {copySupported ? (
         <button
           className="btn p-0"
           type="button"
           onClick={(e) => {
             e.preventDefault();
-            performCopy(children);
+            if (valueToCopy) {
+              performCopy(valueToCopy);
+            } else if (children) {
+              performCopy(children);
+            }
           }}
           title="Copy to Clipboard"
+          style={compact ? { lineHeight: 1.1 } : {}}
         >
-          <span className="text-main" style={{ fontSize: "1.1rem" }}>
+          <span
+            className="text-main"
+            style={{ fontSize: compact ? ".95rem" : "1.1rem" }}
+          >
             {copySuccess ? <HiOutlineClipboardCheck /> : <HiOutlineClipboard />}
           </span>
         </button>
       ) : null}
-      <span className="ml-2">
-        <code className="text-main text-break">{children}</code>
-      </span>
+      {children ? (
+        <span
+          className={compact ? "" : "ml-2"}
+          style={compact ? { marginLeft: 2, lineHeight: 1.1 } : {}}
+        >
+          <code
+            className="text-main text-break"
+            style={compact ? { fontSize: ".7rem" } : {}}
+          >
+            {children}
+          </code>
+        </span>
+      ) : null}
 
       {copySuccess ? (
         <SimpleTooltip position="left">Copied to clipboard!</SimpleTooltip>

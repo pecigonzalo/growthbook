@@ -13,7 +13,7 @@ GrowthBook is a modular platform. You can use it for either Feature Flags, Exper
 
 [**Feature Flags**](/app/features) you create in the GrowthBook UI are published to our API as a JSON file. Pass this JSON into our SDKs and use the feature flags throughout your code. If a feature is running as part of an A/B test, we'll fire a tracking callback in the SDK so you can record that event in your data warehouse or analytics platform for later analysis.
 
-[**Experiment Analysis**](/app/experiments) queries your data warehouse for raw experiment data and runs it through our stats engine to produce a report. No raw user-level events or PII are ever sent to GrowthBook. We only get back aggregate info instead (mean, stddev, etc.).
+[**Experiment Analysis**](/app/experiment-configuration) queries your data warehouse for raw experiment data and runs it through our stats engine to produce a report. No raw user-level events or PII are ever sent to GrowthBook. We only get back aggregate info instead (sums, sums of squares, etc.).
 
 <div style={{textAlign: 'center'}}>
 
@@ -52,13 +52,13 @@ You can also change the value of a feature with **Override Rules**. The followin
 - **Percentage Rollout** - Use random sampling to roll out a new feature value to a percent of users
 - **A/B Experiment** - Run a controlled A/B test between 2 or more feature values
 
-All features for an environment are packaged together into a single JSON file. All you need to do is pass this into our [SDKs](/lib) along with [user targeting attributes](/app/features#targeting-attributes).
+All features for an environment are packaged together into a single JSON file. All you need to do is pass this into our [SDKs](/lib) along with [user targeting attributes](/features/targeting).
 
 Read more about [features here](/app/features).
 
 ## Experiment Analysis
 
-GrowthBook needs to connect to your [Data Source](/app/datasources) in order to query experiment results. We support all of the popular SQL data warehouses in addition to Mixpanel and Google Analytics. GrowthBook is extremely flexible and can support almost any schema structure with a little bit of configuration.
+GrowthBook needs to connect to your [Data Source](/warehouses) in order to query experiment results. We support all of the popular SQL data warehouses in addition to Mixpanel and Google Analytics. GrowthBook is extremely flexible and can support almost any schema structure with a little bit of configuration.
 
 ![Data warehouses supported by GrowthBook](/images/GrowthBook-supported-DB-766.png)
 
@@ -69,13 +69,13 @@ Once connected to a data source, you need to build a re-usable library of [Metri
 - **revenue** - the amount of revenue earned (e.g. `revenue per user`, `average order value`)
 - **duration** - the time it takes to do something (e.g. `page load time`, `time on site`)
 
-Once these are metrics are set up, you can import experiments and start analyzing the results. GrowthBook uses a [Bayesian statistics engine](/statistics) to determine the probability that a variation is better than the control, as well as how much better it is and how risky it is to stop the experiment now.
+Once these are metrics are set up, you can import experiments and start analyzing the results. GrowthBook uses a [Bayesian statistics engine](/statistics/overview) to determine the probability that a variation is better than the control, as well as how much better it is and how risky it is to stop the experiment now.
 
 ![Results Table](/images/results-table.png)
 
 Your data team can drill down into results by custom [dimensions](/app/dimensions), view the raw SQL that GrowthBook is running on your data warehouse, and export results to a Jupyter notebook for even deeper analysis.
 
-Read more about [experiments here](/app/experiments).
+Read more about [experiments here](/experiments).
 
 ## Use Cases
 
@@ -103,6 +103,15 @@ This is best for companies that already have a robust process for running experi
 
 <div className="row is-multiline">
     <div className="col col--4">
+      <ButtonCard
+        to={'/quick-start'}
+        title="Quick Start Guide"
+        description="Learn how to get started with GrowthBook"
+        style={{ height: '100%' }}
+        color="default"
+      ></ButtonCard>
+    </div>
+    <div className="col col--4">
         <ButtonCard
             to={'/self-host'}
             title="Self-Host"
@@ -119,13 +128,5 @@ This is best for companies that already have a robust process for running experi
             color="default"
         ></ButtonCard>
     </div>
-    <div className="col col--4">
-        <ButtonCard
-            to={'/faq'}
-            title="FAQ"
-            description="Frequently asked questions"
-            style={{ height: '100%' }}
-            color="default"
-        ></ButtonCard>
-    </div>
+
 </div>

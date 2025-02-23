@@ -1,12 +1,19 @@
 import fs from "fs";
 import path from "path";
 import { Request, Response } from "express";
-import { lookupOrganizationByApiKey } from "../models/ApiKeyModel";
-import { APP_ORIGIN } from "../util/secrets";
-import { ExperimentInterface } from "../../types/experiment";
-import { ErrorResponse, ExperimentOverridesResponse } from "../../types/api";
-import { getExperimentOverrides } from "../services/organizations";
-import { getAllExperiments } from "../models/ExperimentModel";
+import { lookupOrganizationByApiKey } from "back-end/src/models/ApiKeyModel";
+import { APP_ORIGIN } from "back-end/src/util/secrets";
+import {
+  ExperimentInterface,
+  LegacyExperimentPhase,
+  LegacyVariation,
+} from "back-end/types/experiment";
+import { ErrorResponse, ExperimentOverridesResponse } from "back-end/types/api";
+import {
+  getContextForAgendaJobByOrgId,
+  getExperimentOverrides,
+} from "back-end/src/services/organizations";
+import { getAllExperiments } from "back-end/src/models/ExperimentModel";
 
 export function canAutoAssignExperiment(
   experiment: ExperimentInterface
@@ -15,7 +22,8 @@ export function canAutoAssignExperiment(
 
   return (
     experiment.variations.filter(
-      (v) => (v.dom && v.dom.length > 0) || (v.css && v.css.length > 0)
+      (v: LegacyVariation) =>
+        (v.dom && v.dom.length > 0) || (v.css && v.css.length > 0)
     ).length > 0
   );
 }
@@ -41,9 +49,9 @@ export async function getExperimentConfig(
       });
     }
 
-    const { overrides, expIdMapping } = await getExperimentOverrides(
-      organization
-    );
+    const context = await getContextForAgendaJobByOrgId(organization);
+
+    const { overrides, expIdMapping } = await getExperimentOverrides(context);
 
     // TODO: add cache headers?
     res.status(200).json({
@@ -108,7 +116,9 @@ export async function getExperimentsScript(
           "Must use a Publishable API key to load the visual editor script",
       });
     }
-    const experiments = await getAllExperiments(organization);
+
+    const context = await getContextForAgendaJobByOrgId(organization);
+    const experiments = await getAllExperiments(context);
 
     const experimentData: ExperimentData[] = [];
 
@@ -124,15 +134,16 @@ export async function getExperimentsScript(
       const groups: string[] = [];
 
       const phase = exp.phases[exp.phases.length - 1];
-      if (phase && phase.groups && phase.groups.length > 0) {
-        groups.push(...phase.groups);
+      const phaseGroups = (phase as LegacyExperimentPhase)?.groups;
+      if (phaseGroups && phaseGroups.length > 0) {
+        groups.push(...phaseGroups);
       }
 
       const data: ExperimentData = {
         key,
         draft: exp.status === "draft",
         anon: exp.userIdType === "anonymous",
-        variationCode: exp.variations.map((v) => {
+        variationCode: exp.variations.map((v: LegacyVariation) => {
           const commands: string[] = [];
           if (v.css) {
             commands.push("injectStyles(" + JSON.stringify(v.css) + ")");

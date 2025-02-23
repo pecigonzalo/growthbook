@@ -8,6 +8,7 @@ import SelectField from "@/components/Forms/SelectField";
 import Modal from "@/components/Modal";
 import useApi from "@/hooks/useApi";
 import { useEnvironments } from "@/services/features";
+import usePermissionsUtil from "@/hooks/usePermissionsUtils";
 
 export default function VercelIntegrationPage() {
   const router = useRouter();
@@ -15,6 +16,7 @@ export default function VercelIntegrationPage() {
 
   const { apiCall } = useAuth();
   const environments = useEnvironments();
+  const permissionsUtil = usePermissionsUtil();
 
   const { data } = useApi<{ hasToken: boolean }>("/vercel/has-token");
   const [integrationAlreadyExists, setIntegrationAlreadyExists] = useState(
@@ -51,10 +53,21 @@ export default function VercelIntegrationPage() {
     });
   }
 
+  if (!permissionsUtil.canManageIntegrations()) {
+    return (
+      <div className="container-fluid pagecontents">
+        <div className="alert alert-danger">
+          You do not have access to view this page.
+        </div>
+      </div>
+    );
+  }
+
   return (
     <>
       {integrationAlreadyExists ? (
         <Modal
+          trackingEventModalType=""
           open
           close={() => window.close()}
           cta="Continue"
@@ -82,6 +95,7 @@ export default function VercelIntegrationPage() {
             />
           ) : (
             <Modal
+              trackingEventModalType=""
               submit={async () => {
                 await apiCall("/vercel/env-vars", {
                   method: "POST",
@@ -115,6 +129,7 @@ export default function VercelIntegrationPage() {
                           value: env.id,
                         }))}
                         initialOption="None"
+                        // @ts-expect-error TS(2322) If you come across this, please fix it!: Type 'string | null' is not assignable to type 'st... Remove this comment to see the full error message
                         value={elem.gb}
                         onChange={(selected) => {
                           const newMap = [...gbVercelEnvMap];

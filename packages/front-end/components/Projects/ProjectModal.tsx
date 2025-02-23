@@ -16,12 +16,14 @@ export default function ProjectModal({
   const form = useForm<Partial<ProjectInterface>>({
     defaultValues: {
       name: existing.name || "",
+      description: existing.description || "",
     },
   });
   const { apiCall } = useAuth();
 
   return (
     <Modal
+      trackingEventModalType=""
       open={true}
       close={close}
       header={existing.id ? "Edit Project" : "Create Project"}
@@ -34,6 +36,14 @@ export default function ProjectModal({
       })}
     >
       <Field label="Name" maxLength={30} required {...form.register("name")} />
+      <Field
+        label="Description"
+        maxLength={100}
+        minRows={3}
+        maxRows={8}
+        textarea={true}
+        {...form.register("description")}
+      />
     </Modal>
   );
 }

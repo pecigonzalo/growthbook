@@ -1,17 +1,17 @@
 import type { Response } from "express";
 import uniqid from "uniqid";
-import { AuthRequest } from "../../types/AuthRequest";
-import { ApiErrorResponse } from "../../../types/api";
-import { getOrgFromReq } from "../../services/organizations";
-import { DimensionInterface } from "../../../types/dimension";
+import { AuthRequest } from "back-end/src/types/AuthRequest";
+import { PrivateApiErrorResponse } from "back-end/types/api";
+import { getContextFromReq } from "back-end/src/services/organizations";
+import { DimensionInterface } from "back-end/types/dimension";
 import {
   createDimension,
   deleteDimensionById,
   findDimensionById,
   findDimensionsByOrganization,
   updateDimension,
-} from "../../models/DimensionModel";
-import { getDataSourceById } from "../../models/DataSourceModel";
+} from "back-end/src/models/DimensionModel";
+import { getDataSourceById } from "back-end/src/models/DataSourceModel";
 
 // region GET /dimensions
 
@@ -30,9 +30,9 @@ type GetDimensionsResponse = {
  */
 export const getDimensions = async (
   req: GetDimensionsRequest,
-  res: Response<GetDimensionsResponse | ApiErrorResponse>
+  res: Response<GetDimensionsResponse | PrivateApiErrorResponse>
 ) => {
-  const { org } = getOrgFromReq(req);
+  const { org } = getContextFromReq(req);
   const dimensions = await findDimensionsByOrganization(org.id);
   res.status(200).json({
     status: 200,
@@ -49,6 +49,7 @@ type CreateDimensionRequest = AuthRequest<{
   userIdType: string;
   name: string;
   sql: string;
+  description: string;
 }>;
 
 type CreateDimensionResponse = {
@@ -64,14 +65,17 @@ type CreateDimensionResponse = {
  */
 export const postDimension = async (
   req: CreateDimensionRequest,
-  res: Response<CreateDimensionResponse | ApiErrorResponse>
+  res: Response<CreateDimensionResponse | PrivateApiErrorResponse>
 ) => {
-  req.checkPermissions("createDimensions");
+  const context = getContextFromReq(req);
 
-  const { org, userName } = getOrgFromReq(req);
-  const { datasource, name, sql, userIdType } = req.body;
+  if (!context.permissions.canCreateDimension()) {
+    context.permissions.throwPermissionError();
+  }
+  const { org, userName } = context;
+  const { datasource, name, sql, userIdType, description } = req.body;
 
-  const datasourceDoc = await getDataSourceById(datasource, org.id);
+  const datasourceDoc = await getDataSourceById(context, datasource);
   if (!datasourceDoc) {
     throw new Error("Invalid data source");
   }
@@ -86,6 +90,7 @@ export const postDimension = async (
     dateCreated: new Date(),
     dateUpdated: new Date(),
     organization: org.id,
+    description,
   });
 
   res.status(200).json({
@@ -105,6 +110,7 @@ type PutDimensionRequest = AuthRequest<
     name: string;
     sql: string;
     owner: string;
+    description: string;
   },
   { id: string },
   Record<string, never>
@@ -124,9 +130,11 @@ export const putDimension = async (
   req: PutDimensionRequest,
   res: Response<PutDimensionResponse>
 ) => {
-  req.checkPermissions("createDimensions");
-
-  const { org } = getOrgFromReq(req);
+  const context = getContextFromReq(req);
+  if (!context.permissions.canUpdateDimension()) {
+    context.permissions.throwPermissionError();
+  }
+  const { org } = context;
   const { id } = req.params;
   const dimension = await findDimensionById(id, org.id);
 
@@ -134,9 +142,9 @@ export const putDimension = async (
     throw new Error("Could not find dimension");
   }
 
-  const { datasource, name, sql, userIdType, owner } = req.body;
+  const { datasource, name, sql, userIdType, owner, description } = req.body;
 
-  const datasourceDoc = await getDataSourceById(datasource, org.id);
+  const datasourceDoc = await getDataSourceById(context, datasource);
   if (!datasourceDoc) {
     throw new Error("Invalid data source");
   }
@@ -147,6 +155,7 @@ export const putDimension = async (
     name,
     sql,
     owner,
+    description,
     dateUpdated: new Date(),
   });
 
@@ -173,12 +182,14 @@ type DeleteDimensionResponse = {
  */
 export const deleteDimension = async (
   req: DeleteDimensionRequest,
-  res: Response<DeleteDimensionResponse | ApiErrorResponse>
+  res: Response<DeleteDimensionResponse | PrivateApiErrorResponse>
 ) => {
-  req.checkPermissions("createDimensions");
-
   const { id } = req.params;
-  const { org } = getOrgFromReq(req);
+  const context = getContextFromReq(req);
+  if (!context.permissions.canDeleteDimension()) {
+    context.permissions.throwPermissionError();
+  }
+  const { org } = context;
   const dimension = await findDimensionById(id, org.id);
 
   if (!dimension) {

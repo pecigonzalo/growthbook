@@ -11,17 +11,22 @@ import {
   EMAIL_HOST_PASSWORD,
   EMAIL_HOST_USER,
   EMAIL_PORT,
-} from "../util/secrets";
+} from "back-end/src/util/secrets";
 import {
   DataSourceInterface,
   DataSourceInterfaceWithParams,
-} from "../../types/datasource";
-import { MetricInterface } from "../../types/metric";
-import { DimensionInterface } from "../../types/dimension";
-import { encryptParams } from "../services/datasource";
-import { OrganizationSettings } from "../../types/organization";
-import { upgradeMetricDoc, upgradeDatasourceObject } from "../util/migrations";
-import { logger } from "../util/logger";
+} from "back-end/types/datasource";
+import { MetricInterface } from "back-end/types/metric";
+import { DimensionInterface } from "back-end/types/dimension";
+import { encryptParams } from "back-end/src/services/datasource";
+import { OrganizationSettings, ReqContext } from "back-end/types/organization";
+import {
+  upgradeMetricDoc,
+  upgradeDatasourceObject,
+} from "back-end/src/util/migrations";
+import { logger } from "back-end/src/util/logger";
+import { SegmentInterface } from "back-end/types/segment";
+import { ApiReqContext } from "back-end/types/api";
 
 export type ConfigFile = {
   organization?: {
@@ -48,6 +53,12 @@ export type ConfigFile = {
   dimensions?: {
     [key: string]: Omit<
       DimensionInterface,
+      "id" | "organization" | "dateCreated" | "dateUpdated"
+    >;
+  };
+  segments?: {
+    [key: string]: Omit<
+      SegmentInterface,
       "id" | "organization" | "dateCreated" | "dateUpdated"
     >;
   };
@@ -159,26 +170,31 @@ export function getConfigDatasources(
   });
 }
 
-export function getConfigMetrics(organization: string): MetricInterface[] {
+export function getConfigMetrics(
+  context: ReqContext | ApiReqContext
+): MetricInterface[] {
   reloadConfigIfNeeded();
   if (!config || !config.metrics) return [];
   const metrics = config.metrics;
 
-  return Object.keys(metrics).map((id) => {
-    const m = metrics[id];
+  return Object.keys(metrics)
+    .map((id) => {
+      const m = metrics[id];
 
-    return upgradeMetricDoc({
-      tags: [],
-      id,
-      ...m,
-      description: m?.description || "",
-      organization,
-      dateCreated: null,
-      dateUpdated: null,
-      queries: [],
-      runStarted: null,
-    });
-  });
+      return upgradeMetricDoc({
+        tags: [],
+        id,
+        ...m,
+        description: m?.description || "",
+        organization: context.org.id,
+        dateCreated: null,
+        dateUpdated: null,
+        queries: [],
+        runStarted: null,
+        managedBy: "config",
+      });
+    })
+    .filter((m) => context.permissions.canReadMultiProjectResource(m.projects));
 }
 
 export function getConfigDimensions(
@@ -204,4 +220,22 @@ export function getConfigDimensions(
 export function getConfigOrganizationSettings(): OrganizationSettings {
   reloadConfigIfNeeded();
   return config?.organization?.settings || {};
+}
+
+export function getConfigSegments(organization: string): SegmentInterface[] {
+  reloadConfigIfNeeded();
+  if (!config || !config.segments) return [];
+  const segments = config.segments;
+
+  return Object.keys(segments).map((id) => {
+    const d = segments[id];
+
+    return {
+      id,
+      ...d,
+      organization,
+      dateCreated: new Date(),
+      dateUpdated: new Date(),
+    };
+  });
 }

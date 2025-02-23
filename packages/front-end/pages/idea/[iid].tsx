@@ -11,6 +11,7 @@ import Link from "next/link";
 import { ImpactEstimateInterface } from "back-end/types/impact-estimate";
 import { ExperimentInterfaceStringDates } from "back-end/types/experiment";
 import { useForm } from "react-hook-form";
+import { date } from "shared/dates";
 import useApi from "@/hooks/useApi";
 import LoadingOverlay from "@/components/LoadingOverlay";
 import { useAuth } from "@/services/auth";
@@ -18,7 +19,6 @@ import DeleteButton from "@/components/DeleteButton/DeleteButton";
 import DiscussionThread from "@/components/DiscussionThread";
 import useSwitchOrg from "@/services/useSwitchOrg";
 import ImpactModal from "@/components/Ideas/ImpactModal";
-import { date } from "@/services/dates";
 import NewExperimentForm from "@/components/Experiment/NewExperimentForm";
 import ViewQueryButton from "@/components/Metrics/ViewQueryButton";
 import ImpactProjections from "@/components/Ideas/ImpactProjections";
@@ -34,6 +34,7 @@ import SelectField from "@/components/Forms/SelectField";
 import { useUser } from "@/services/UserContext";
 import SortedTags from "@/components/Tags/SortedTags";
 import MarkdownInlineEdit from "@/components/Markdown/MarkdownInlineEdit";
+import usePermissionsUtil from "@/hooks/usePermissionsUtils";
 
 const IdeaPage = (): ReactElement => {
   const router = useRouter();
@@ -50,9 +51,11 @@ const IdeaPage = (): ReactElement => {
     getSegmentById,
     refreshTags,
     getProjectById,
+    getDatasourceById,
   } = useDefinitions();
 
-  const { permissions, getUserDisplay } = useUser();
+  const { getUserDisplay } = useUser();
+  const permissionsUtil = usePermissionsUtil();
 
   const { apiCall } = useAuth();
 
@@ -66,7 +69,7 @@ const IdeaPage = (): ReactElement => {
     experiment?: Partial<ExperimentInterfaceStringDates>;
   }>(`/idea/${iid}`);
 
-  useSwitchOrg(data?.idea?.organization);
+  useSwitchOrg(data?.idea?.organization || null);
 
   const form = useForm<{
     text: string;
@@ -101,14 +104,20 @@ const IdeaPage = (): ReactElement => {
   const idea = data.idea;
   const estimate = data.estimate;
 
-  const canEdit = permissions.check("createIdeas", idea.project);
+  const canEdit = permissionsUtil.canUpdateIdea(idea, {});
+  const canCreateIdeasInCurrentProject = permissionsUtil.canViewIdeaModal(
+    project
+  );
+
+  const metric = getMetricById(estimate?.metric || "");
+  const datasource = getDatasourceById(metric?.datasource || "");
 
   return (
     <div className="container-fluid pagecontents pt-3">
       {project &&
         project !== idea.project &&
         canEdit &&
-        permissions.check("createIdeas", project) && (
+        canCreateIdeasInCurrentProject && (
           <div className="bg-info p-2 mb-3 text-center text-white">
             This idea is in a different project. Move it to{" "}
             <a
@@ -131,99 +140,100 @@ const IdeaPage = (): ReactElement => {
             </a>
           </div>
         )}
-      <div className="mb-2 mt-2 row d-flex">
-        <div className="col-auto">
-          <Link href="/ideas">
-            <a>
-              <FaAngleLeft /> All Ideas
-            </a>
-          </Link>
-        </div>
-        {idea.archived && (
+      <div className="mb-2 mt-2 row d-flex justify-content-between align-items-center">
+        <div>
           <div className="col-auto">
-            <div
-              className="badge badge-secondary"
-              style={{ fontSize: "1.1em" }}
-            >
-              Archived
-            </div>
+            <Link href="/ideas">
+              <FaAngleLeft />
+              All Ideas
+            </Link>
           </div>
-        )}
-        <div className="col"></div>
-        {!idea.archived &&
-          permissions.check("createAnalyses", idea.project) &&
-          !data.experiment && (
-            <div className="col-md-auto">
-              <button
-                className="btn btn-outline-primary mr-3"
-                onClick={() => {
-                  setNewExperiment(true);
-                }}
+          {idea.archived && (
+            <div className="col-auto">
+              <div
+                className="badge badge-secondary"
+                style={{ fontSize: "1.1em" }}
               >
-                Convert Idea to Experiment
-              </button>
+                Archived
+              </div>
             </div>
           )}
-        {canEdit && (
-          <div className="col-auto">
-            <MoreMenu>
-              <a
-                href="#"
-                className="dropdown-item"
-                onClick={async (e) => {
-                  e.preventDefault();
-                  await apiCall(`/idea/${iid}`, {
-                    method: "POST",
-                    body: JSON.stringify({
-                      archived: !idea.archived,
-                    }),
-                  });
-                  mutate({
-                    ...data,
-                    idea: {
-                      ...data.idea,
-                      archived: !idea.archived,
-                    },
-                  });
-                }}
-              >
-                <FaArchive /> {idea.archived ? "Unarchive" : "Archive"}
-              </a>
-              <DeleteButton
-                displayName="Idea"
-                link={true}
-                className="dropdown-item text-dark"
-                text="Delete"
-                onClick={async () => {
-                  await apiCall<{ status: number; message?: string }>(
-                    `/idea/${iid}`,
-                    {
-                      method: "DELETE",
-                      body: JSON.stringify({ id: iid }),
-                    }
-                  );
+        </div>
+        <div className="d-flex align-items-center">
+          {!idea.archived &&
+            permissionsUtil.canViewExperimentModal(idea.project) &&
+            !data.experiment && (
+              <div className="col-md-auto">
+                <button
+                  className="btn btn-outline-primary"
+                  onClick={() => {
+                    setNewExperiment(true);
+                  }}
+                >
+                  Convert Idea to Experiment
+                </button>
+              </div>
+            )}
+          {canEdit && (
+            <div className="col-auto d-flex">
+              <MoreMenu>
+                <a
+                  href="#"
+                  className="dropdown-item"
+                  onClick={async (e) => {
+                    e.preventDefault();
+                    await apiCall(`/idea/${iid}`, {
+                      method: "POST",
+                      body: JSON.stringify({
+                        archived: !idea.archived,
+                      }),
+                    });
+                    mutate({
+                      ...data,
+                      idea: {
+                        ...data.idea,
+                        archived: !idea.archived,
+                      },
+                    });
+                  }}
+                >
+                  <FaArchive /> {idea.archived ? "Unarchive" : "Archive"}
+                </a>
+                <DeleteButton
+                  displayName="Idea"
+                  link={true}
+                  className="dropdown-item text-dark"
+                  text="Delete"
+                  onClick={async () => {
+                    await apiCall<{ status: number; message?: string }>(
+                      `/idea/${iid}`,
+                      {
+                        method: "DELETE",
+                        body: JSON.stringify({ id: iid }),
+                      }
+                    );
 
-                  push("/ideas");
-                }}
-              />
-            </MoreMenu>
-          </div>
-        )}
-        {canEstimateImpact && <div className="col-md-3"></div>}
+                    push("/ideas");
+                  }}
+                />
+              </MoreMenu>
+            </div>
+          )}
+        </div>
       </div>
       {data.experiment && (
         <div className="bg-white border border-info p-3 mb-3">
           <div className="d-flex">
             <strong className="mr-3">Linked Experiment: </strong>
-            <Link href={`/experiment/${data.experiment.id}`}>
-              <a className="mr-3">
-                <FaExternalLinkAlt /> {data.experiment.name}
-              </a>
+            <Link href={`/experiment/${data.experiment.id}`} className="mr-3">
+              <FaExternalLinkAlt /> {data.experiment.name}
             </Link>
-            <StatusIndicator
-              status={data.experiment.status}
-              archived={data.experiment.archived}
-            />
+            {data.experiment.status && (
+              <StatusIndicator
+                status={data.experiment.status}
+                archived={data.experiment.archived || false}
+              />
+            )}
           </div>
         </div>
       )}
@@ -316,7 +326,9 @@ const IdeaPage = (): ReactElement => {
                         <small>
                           Submitted by{" "}
                           <strong className="mr-1">
-                            {getUserDisplay(idea.userId) || idea.userName}
+                            {idea.userId
+                              ? getUserDisplay(idea.userId)
+                              : idea.userName}
                           </strong>
                           {idea.source && idea.source !== "web" && (
                             <span className="mr-1">via {idea.source}</span>
@@ -334,7 +346,9 @@ const IdeaPage = (): ReactElement => {
                         <small>
                           Project:{" "}
                           <span className="badge badge-secondary">
-                            {getProjectById(idea.project)?.name || "None"}
+                            {idea.project
+                              ? getProjectById(idea.project)?.name || "None"
+                              : "None"}
                           </span>
                         </small>
                       </div>
@@ -357,7 +371,7 @@ const IdeaPage = (): ReactElement => {
                   },
                 });
               }}
-              value={idea.details}
+              value={idea.details || ""}
               canCreate={canEdit}
               canEdit={canEdit}
               label="More Details"
@@ -370,7 +384,7 @@ const IdeaPage = (): ReactElement => {
               type="idea"
               id={idea.id}
               showTitle={true}
-              project={idea.project}
+              projects={idea.project ? [idea.project] : []}
             />
           </div>
         </div>
@@ -394,20 +408,18 @@ const IdeaPage = (): ReactElement => {
                 </div>
               </div>
 
-              {(!idea.estimateParams || !estimate) &&
-                permissions.check("runQueries", "") &&
-                canEdit && (
-                  <div className="mt-2 text-center">
-                    <button
-                      className="btn btn-outline-primary"
-                      onClick={() => {
-                        setImpactOpen(true);
-                      }}
-                    >
-                      <FaChartLine /> Estimate Impact
-                    </button>
-                  </div>
-                )}
+              {(!idea.estimateParams || !estimate) && canEdit && (
+                <div className="mt-2 text-center">
+                  <button
+                    className="btn btn-outline-primary"
+                    onClick={() => {
+                      setImpactOpen(true);
+                    }}
+                  >
+                    <FaChartLine /> Estimate Impact
+                  </button>
+                </div>
+              )}
 
               <hr />
               <ImpactProjections
@@ -422,10 +434,14 @@ const IdeaPage = (): ReactElement => {
                   <RightRailSection
                     title="Parameters"
                     open={() => setImpactOpen(true)}
-                    canOpen={permissions.check("runQueries", "") && canEdit}
+                    canOpen={
+                      (!datasource ||
+                        permissionsUtil.canRunMetricQueries(datasource)) &&
+                      canEdit
+                    }
                   >
                     <RightRailSectionGroup title="Metric" type="badge">
-                      {getMetricById(estimate?.metric)?.name}
+                      {metric?.name}
                     </RightRailSectionGroup>
                     <RightRailSectionGroup
                       title="Percent of Traffic"
@@ -440,7 +456,9 @@ const IdeaPage = (): ReactElement => {
                       {idea?.estimateParams?.numVariations || 2}
                     </RightRailSectionGroup>
                     <RightRailSectionGroup title="User Segment" type="badge">
-                      {getSegmentById(estimate?.segment)?.name || "Everyone"}
+                      {estimate?.segment
+                        ? getSegmentById(estimate?.segment)?.name || "Everyone"
+                        : "Everyone"}
                     </RightRailSectionGroup>
                     <RightRailSectionGroup
                       title="Expected Metric Change"
@@ -452,7 +470,7 @@ const IdeaPage = (): ReactElement => {
                 </div>
               )}
 
-              {estimate?.query?.length > 0 && (
+              {estimate && (estimate.query?.length || 0) > 0 && (
                 <div>
                   <hr />
                   <ViewQueryButton
@@ -497,7 +515,7 @@ const IdeaPage = (): ReactElement => {
             datasource: data?.estimate?.metric
               ? getMetricById(data?.estimate?.metric)?.datasource
               : undefined,
-            metrics: data?.estimate?.metric ? [data?.estimate?.metric] : [],
+            goalMetrics: data?.estimate?.metric ? [data?.estimate?.metric] : [],
           }}
         />
       )}

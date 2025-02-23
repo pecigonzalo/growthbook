@@ -17,6 +17,11 @@ import track from "@/services/track";
 import Modal from "@/components/Modal";
 import ConnectionSettings from "@/components/Settings/ConnectionSettings";
 import { useDefinitions } from "@/services/DefinitionsContext";
+import { ensureAndReturn } from "@/types/utils";
+import usePermissionsUtil from "@/hooks/usePermissionsUtils";
+import useProjectOptions from "@/hooks/useProjectOptions";
+import Tooltip from "@/components/Tooltip/Tooltip";
+import EditSchemaOptions from "./EditSchemaOptions";
 
 const typeOptions = dataSourceConnections;
 
@@ -44,9 +49,27 @@ const DataSourceForm: FC<{
   const { projects } = useDefinitions();
   const [dirty, setDirty] = useState(false);
   const [datasource, setDatasource] = useState<
-    Partial<DataSourceInterfaceWithParams>
-  >(null);
+    Partial<DataSourceInterfaceWithParams> | undefined
+  >();
   const [hasError, setHasError] = useState(false);
+  const permissionsUtil = usePermissionsUtil();
+
+  const permissionRequired = (project: string) => {
+    return existing
+      ? permissionsUtil.canUpdateDataSourceParams({
+          projects: [project],
+          type: datasource?.type,
+        })
+      : permissionsUtil.canCreateDataSource({
+          projects: [project],
+          type: datasource?.type,
+        });
+  };
+
+  const projectOptions = useProjectOptions(
+    permissionRequired,
+    datasource?.projects || []
+  );
 
   useEffect(() => {
     track("View Datasource Form", {
@@ -80,7 +103,7 @@ const DataSourceForm: FC<{
       let id = data.id;
 
       // Update
-      if (data.id) {
+      if (id) {
         const res = await apiCall<{ status: number; message: string }>(
           `/datasource/${data.id}`,
           {
@@ -99,7 +122,10 @@ const DataSourceForm: FC<{
           body: JSON.stringify({
             ...datasource,
             settings: {
-              ...getInitialSettings("custom", datasource.params),
+              ...getInitialSettings(
+                "custom",
+                ensureAndReturn(datasource.params)
+              ),
               ...(datasource.settings || {}),
             },
           }),
@@ -143,6 +169,7 @@ const DataSourceForm: FC<{
 
   return (
     <Modal
+      trackingEventModalType=""
       inline={inline}
       open={true}
       submit={handleSubmit}
@@ -177,7 +204,7 @@ const DataSourceForm: FC<{
       )}
       <SelectField
         label="Data Source Type"
-        value={datasource.type}
+        value={datasource.type || typeOptions[0].type}
         onChange={(value) => {
           const option = typeOptions.filter((o) => o.type === value)[0];
           if (!option) return;
@@ -235,10 +262,19 @@ const DataSourceForm: FC<{
       {projects?.length > 0 && (
         <div className="form-group">
           <MultiSelectField
-            label="Projects"
+            label={
+              <>
+                Projects{" "}
+                <Tooltip
+                  body={`The dropdown below has been filtered to only include projects where you have permission to ${
+                    existing ? "update" : "create"
+                  } Data Sources.`}
+                />
+              </>
+            }
             placeholder="All projects"
             value={datasource.projects || []}
-            options={projects.map((p) => ({ value: p.id, label: p.name }))}
+            options={projectOptions}
             onChange={(v) => onManualChange("projects", v)}
             customClassName="label-overflow-ellipsis"
             helpText="Assign this data source to specific projects"
@@ -249,6 +285,11 @@ const DataSourceForm: FC<{
         datasource={datasource}
         existing={existing}
         hasError={hasError}
+        setDatasource={setDatasource}
+        setDirty={setDirty}
+      />
+      <EditSchemaOptions
+        datasource={datasource}
         setDatasource={setDatasource}
         setDirty={setDirty}
       />

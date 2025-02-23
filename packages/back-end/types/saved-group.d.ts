@@ -1,12 +1,19 @@
-export interface SavedGroupInterface {
-  id: string;
-  organization: string;
-  groupName: string;
-  owner: string;
-  attributeKey: string;
-  values: string[];
-  dateUpdated: Date;
-  dateCreated: Date;
-}
+import { z } from "zod";
+import { SavedGroupInterface, SavedGroupType } from "shared/src/types";
+import {
+  postSavedGroupBodyValidator,
+  putSavedGroupBodyValidator,
+} from "back-end/src/routers/saved-group/saved-group.validators";
 
-export type GroupMap = Map<string, string[] | number[]>;
+/**
+ * @deprecated
+ */
+export type SavedGroupSource = "inline" | "runtime";
+
+export type LegacySavedGroupInterface = Omit<SavedGroupInterface, "type"> & {
+  source?: SavedGroupSource;
+  type?: SavedGroupType;
+};
+
+export type CreateSavedGroupProps = z.infer<typeof postSavedGroupBodyValidator>;
+export type UpdateSavedGroupProps = z.infer<typeof putSavedGroupBodyValidator>;

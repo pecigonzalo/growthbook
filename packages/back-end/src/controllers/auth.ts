@@ -3,35 +3,39 @@ import {
   createForgotPasswordToken,
   deleteForgotPasswordToken,
   getUserIdFromForgotPasswordToken,
-} from "../models/ForgotPasswordModel";
+} from "back-end/src/models/ForgotPasswordModel";
 import {
   createOrganization,
   hasOrganization,
-} from "../models/OrganizationModel";
-import { IS_CLOUD } from "../util/secrets";
+} from "back-end/src/models/OrganizationModel";
+import { IS_CLOUD } from "back-end/src/util/secrets";
 import {
   deleteAuthCookies,
   getAuthConnection,
   isNewInstallation,
-  markInstalled,
   validatePasswordFormat,
-} from "../services/auth";
+} from "back-end/src/services/auth";
 import {
   IdTokenCookie,
   RefreshTokenCookie,
   SSOConnectionIdCookie,
-} from "../util/cookie";
-import { getEmailFromUserId, getOrgFromReq } from "../services/organizations";
+} from "back-end/src/util/cookie";
 import {
+  getContextForAgendaJobByOrgObject,
+  getContextFromReq,
+} from "back-end/src/services/organizations";
+import { updatePassword, verifyPassword } from "back-end/src/services/users";
+import { AuthRequest } from "back-end/src/types/AuthRequest";
+import { getSSOConnectionByEmailDomain } from "back-end/src/models/SSOConnectionModel";
+import { UserInterface } from "back-end/types/user";
+import {
+  resetMinTokenDate,
+  getEmailFromUserId,
   createUser,
   getUserByEmail,
   getUserById,
-  updatePassword,
-  verifyPassword,
-} from "../services/users";
-import { AuthRequest } from "../types/AuthRequest";
-import { getSSOConnectionByEmailDomain } from "../models/SSOConnectionModel";
-import { UserInterface } from "../../types/user";
+} from "back-end/src/models/UserModel";
+import { AuthRefreshModel } from "back-end/src/models/AuthRefreshModel";
 
 export async function getHasOrganizations(req: Request, res: Response) {
   const hasOrg = IS_CLOUD ? true : await hasOrganization();
@@ -63,7 +67,7 @@ export async function postRefresh(req: Request, res: Response) {
       idToken,
       refreshToken: newRefreshToken,
       expiresIn,
-    } = await auth.refresh(req, refreshToken);
+    } = await auth.refresh(req, res, refreshToken);
 
     IdTokenCookie.setValue(idToken, req, res, expiresIn);
     if (newRefreshToken) {
@@ -114,7 +118,8 @@ export async function postOAuthCallback(req: Request, res: Response) {
 async function sendLocalSuccessResponse(
   req: Request,
   res: Response,
-  user: UserInterface
+  user: UserInterface,
+  projectId?: string
 ) {
   const { idToken, refreshToken, expiresIn } = await auth.processCallback(
     req,
@@ -134,6 +139,7 @@ async function sendLocalSuccessResponse(
   res.status(200).json({
     status: 200,
     token: idToken,
+    projectId,
   });
 }
 
@@ -154,10 +160,14 @@ export async function postLogout(req: Request, res: Response) {
 
 export async function postLogin(
   // eslint-disable-next-line
-  req: Request<any, any, { email: string; password: string }>,
+  req: Request<any, any, { email: unknown; password: unknown }>,
   res: Response
 ) {
   const { email, password } = req.body;
+
+  if (typeof email !== "string" || typeof password !== "string") {
+    throw new Error("Invalid email or password");
+  }
 
   validatePasswordFormat(password);
 
@@ -184,10 +194,18 @@ export async function postLogin(
 
 export async function postRegister(
   // eslint-disable-next-line
-  req: Request<any, any, { email: string; name: string; password: string }>,
+  req: Request<any, any, { email: unknown; name: unknown; password: unknown }>,
   res: Response
 ) {
   const { email, name, password } = req.body;
+
+  if (
+    typeof email !== "string" ||
+    typeof name !== "string" ||
+    typeof password !== "string"
+  ) {
+    throw new Error("Invalid arguments");
+  }
 
   validatePasswordFormat(password);
 
@@ -208,7 +226,7 @@ export async function postRegister(
   }
 
   // Create new account
-  const user = await createUser(name, email, password);
+  const user = await createUser({ name, email, password });
   sendLocalSuccessResponse(req, res, user);
 }
 
@@ -219,10 +237,10 @@ export async function postFirstTimeRegister(
     // eslint-disable-next-line
     any,
     {
-      email: string;
-      name: string;
-      password: string;
-      companyname: string;
+      email: unknown;
+      name: unknown;
+      password: unknown;
+      companyname: unknown;
     }
   >,
   res: Response
@@ -237,6 +255,15 @@ export async function postFirstTimeRegister(
 
   const { email, name, password, companyname } = req.body;
 
+  if (
+    typeof email !== "string" ||
+    typeof name !== "string" ||
+    typeof password !== "string" ||
+    typeof companyname !== "string"
+  ) {
+    throw new Error("Invalid arguments");
+  }
+
   validatePasswordFormat(password);
   if (companyname.length < 3) {
     throw Error("Company length must be at least 3 characters");
@@ -250,23 +277,34 @@ export async function postFirstTimeRegister(
     });
   }
 
-  const user = await createUser(name, email, password);
-  await createOrganization({
+  // grant the first user on a new installation super admin access
+  const user = await createUser({ name, email, password, superAdmin: true });
+
+  const org = await createOrganization({
     email,
     userId: user.id,
     name: companyname,
   });
-  markInstalled();
 
-  sendLocalSuccessResponse(req, res, user);
+  const context = getContextForAgendaJobByOrgObject(org);
+
+  const project = await context.models.projects.create({
+    name: "My First Project",
+  });
+
+  sendLocalSuccessResponse(req, res, user, project.id);
 }
 
 export async function postForgotPassword(
   // eslint-disable-next-line
-  req: Request<any, any, { email: string }>,
+  req: Request<any, any, { email: unknown }>,
   res: Response
 ) {
   const { email } = req.body;
+  if (!email || typeof email !== "string") {
+    throw new Error("Invalid email");
+  }
+
   await createForgotPasswordToken(email);
 
   res.status(200).json({
@@ -275,11 +313,11 @@ export async function postForgotPassword(
 }
 
 export async function getResetPassword(
-  req: Request<{ token: string }>,
+  req: Request<{ token: unknown }>,
   res: Response
 ) {
   const { token } = req.params;
-  if (!token) {
+  if (!token || typeof token !== "string") {
     throw new Error("Invalid password reset token.");
   }
 
@@ -318,14 +356,17 @@ export async function getSSOConnectionFromDomain(req: Request, res: Response) {
 
 export async function postResetPassword(
   // eslint-disable-next-line
-  req: Request<{ token: string }, any, { password: string }>,
+  req: Request<{ token: unknown }, any, { password: unknown }>,
   res: Response
 ) {
   const { token } = req.params;
   const { password } = req.body;
 
-  if (!token) {
+  if (!token || typeof token !== "string") {
     throw new Error("Invalid password reset token.");
+  }
+  if (!password || typeof password !== "string") {
+    throw new Error("Invalid password");
   }
 
   const userId = await getUserIdFromForgotPasswordToken(token);
@@ -342,6 +383,13 @@ export async function postResetPassword(
   await updatePassword(userId, password);
   await deleteForgotPasswordToken(token);
 
+  // Revoke all refresh tokens for the user
+  // Revoke all active JWT sessions for the user
+  await resetMinTokenDate(userId);
+  await AuthRefreshModel.deleteMany({
+    userId: userId,
+  });
+
   res.status(200).json({
     status: 200,
     email,
@@ -356,7 +404,7 @@ export async function postChangePassword(
   res: Response
 ) {
   const { currentPassword, newPassword } = req.body;
-  const { userId } = getOrgFromReq(req);
+  const { userId } = getContextFromReq(req);
 
   const user = await getUserById(userId);
   if (!user) {
@@ -370,7 +418,13 @@ export async function postChangePassword(
 
   await updatePassword(user.id, newPassword);
 
-  res.status(200).json({
-    status: 200,
+  // Revoke all refresh tokens for the user
+  // Revoke all active JWT sessions for the user
+  await resetMinTokenDate(userId);
+  await AuthRefreshModel.deleteMany({
+    userId: userId,
   });
+
+  // Send back an updated token for the current user so they are not logged out
+  sendLocalSuccessResponse(req as Request, res, user);
 }

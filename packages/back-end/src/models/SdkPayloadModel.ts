@@ -1,17 +1,19 @@
 import mongoose from "mongoose";
-import { FeatureDefinition } from "../../types/api";
+import {
+  AutoExperimentWithProject,
+  FeatureDefinitionWithProject,
+} from "back-end/types/api";
 import {
   SDKPayloadContents,
   SDKPayloadInterface,
   SDKStringifiedPayloadInterface,
-} from "../../types/sdk-payload";
+} from "back-end/types/sdk-payload";
 
-// Increment this if we change the shape of the payload contents
+// Increment this if we change the payload contents in a backwards-incompatible way
 export const LATEST_SDK_PAYLOAD_SCHEMA_VERSION = 1;
 
 const sdkPayloadSchema = new mongoose.Schema({
   organization: String,
-  project: String,
   environment: String,
   dateUpdated: Date,
   deployed: Boolean,
@@ -19,23 +21,23 @@ const sdkPayloadSchema = new mongoose.Schema({
   contents: String,
 });
 sdkPayloadSchema.index(
-  { organization: 1, project: 1, environment: 1 },
+  { organization: 1, environment: 1, schemaVersion: 1 },
   { unique: true }
 );
 type SDKPayloadDocument = mongoose.Document & SDKStringifiedPayloadInterface;
 
-const SDKPayloadModel = mongoose.model<SDKPayloadDocument>(
-  "SdkPayload",
+const SDKPayloadModel = mongoose.model<SDKStringifiedPayloadInterface>(
+  "SdkPayloadCache",
   sdkPayloadSchema
 );
 
 function toInterface(doc: SDKPayloadDocument): SDKPayloadInterface | null {
-  const json = doc.toJSON();
+  const json = doc.toJSON<SDKPayloadDocument>();
   try {
     const contents = JSON.parse(json.contents);
 
     // TODO: better validation here to make sure contents are the correct type?
-    if (!contents.features) return null;
+    if (!contents.features && !contents.experiments) return null;
 
     return {
       ...json,
@@ -48,48 +50,49 @@ function toInterface(doc: SDKPayloadDocument): SDKPayloadInterface | null {
 
 export async function getSDKPayload({
   organization,
-  project,
   environment,
 }: {
   organization: string;
-  project: string;
   environment: string;
-}) {
+}): Promise<SDKPayloadInterface | null> {
   const doc = await SDKPayloadModel.findOne({
     organization,
-    project,
     environment,
     schemaVersion: LATEST_SDK_PAYLOAD_SCHEMA_VERSION,
   });
+
   return doc ? toInterface(doc) : null;
 }
 
 export async function updateSDKPayload({
   organization,
-  project,
   environment,
   featureDefinitions,
+  experimentsDefinitions,
+  savedGroupsInUse,
 }: {
   organization: string;
-  project: string;
   environment: string;
-  featureDefinitions: Record<string, FeatureDefinition>;
+  featureDefinitions: Record<string, FeatureDefinitionWithProject>;
+  experimentsDefinitions: AutoExperimentWithProject[];
+  savedGroupsInUse: string[];
 }) {
   const contents: SDKPayloadContents = {
     features: featureDefinitions,
+    experiments: experimentsDefinitions,
+    savedGroupsInUse: savedGroupsInUse,
   };
 
   await SDKPayloadModel.updateOne(
     {
       organization,
-      project,
       environment,
+      schemaVersion: LATEST_SDK_PAYLOAD_SCHEMA_VERSION,
     },
     {
       $set: {
         dateUpdated: new Date(),
         deployed: false,
-        schemaVersion: LATEST_SDK_PAYLOAD_SCHEMA_VERSION,
         // Contents need to be serialized since they may contain invalid Mongo field keys
         contents: JSON.stringify(contents),
       },

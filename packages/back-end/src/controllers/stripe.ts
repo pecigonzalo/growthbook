@@ -1,180 +1,185 @@
 import { Request, Response } from "express";
 import { Stripe } from "stripe";
 import {
-  APP_ORIGIN,
-  STRIPE_PRICE,
-  STRIPE_WEBHOOK_SECRET,
-  IS_CLOUD,
-} from "../util/secrets";
-import { AuthRequest } from "../types/AuthRequest";
+  LicenseServerError,
+  getEffectiveAccountPlan,
+  getLicense,
+  licenseInit,
+  postCreateBillingSessionToLicenseServer,
+  postNewProSubscriptionToLicenseServer,
+  postNewProTrialSubscriptionToLicenseServer,
+  postNewSubscriptionSuccessToLicenseServer,
+} from "enterprise";
+import { APP_ORIGIN, STRIPE_WEBHOOK_SECRET } from "back-end/src/util/secrets";
+import { AuthRequest } from "back-end/src/types/AuthRequest";
 import {
   getNumberOfUniqueMembersAndInvites,
-  getOrgFromReq,
-} from "../services/organizations";
+  getContextFromReq,
+} from "back-end/src/services/organizations";
+import { updateSubscriptionInDb, stripe } from "back-end/src/services/stripe";
+import { DailyUsage, UsageLimits } from "back-end/types/organization";
+import { sendStripeTrialWillEndEmail } from "back-end/src/services/email";
+import { logger } from "back-end/src/util/logger";
+import { updateOrganization } from "back-end/src/models/OrganizationModel";
 import {
-  updateSubscriptionInDb,
-  stripe,
-  getCoupon,
-  getPrice,
-  getStripeCustomerId,
-} from "../services/stripe";
-import { SubscriptionQuote } from "../../types/organization";
-import { isActiveSubscriptionStatus } from "../util/organization.util";
+  getLicenseMetaData,
+  getUserCodesForOrg,
+} from "back-end/src/services/licenseData";
+import { getDailyCDNUsageForOrg } from "back-end/src/services/clickhouse";
 
-export async function postNewSubscription(
-  req: AuthRequest<{ qty: number; returnUrl: string }>,
-  res: Response
+function withLicenseServerErrorHandling<T>(
+  fn: (req: AuthRequest<T>, res: Response) => Promise<void>
 ) {
-  const { qty } = req.body;
-
-  let { returnUrl } = req.body;
-
-  if (returnUrl?.[0] !== "/") {
-    returnUrl = "/settings/billing";
-  }
-
-  req.checkPermissions("manageBilling");
-
-  const { org } = getOrgFromReq(req);
-
-  const desiredQty = getNumberOfUniqueMembersAndInvites(org);
-
-  if (desiredQty !== qty) {
-    throw new Error(
-      "Number of users is out of date. Please refresh the page and try again."
-    );
-  }
-
-  const stripeCustomerId = await getStripeCustomerId(org);
-
-  const existingSubscriptions = await stripe.subscriptions.list({
-    customer: stripeCustomerId,
-  });
-
-  const promises = existingSubscriptions.data.map(async (subscription) => {
-    if (isActiveSubscriptionStatus(subscription.status)) {
-      await updateSubscriptionInDb(subscription);
-
-      throw new Error(
-        "Existing subscription found. Please refresh the page or go to Settings > Billing to manage your existing subscription."
-      );
+  return async (req: AuthRequest<T>, res: Response) => {
+    try {
+      return await fn(req, res);
+    } catch (e) {
+      if (e instanceof LicenseServerError) {
+        logger.error(`License server error (${e.status}): ${e.message}`);
+        return res
+          .status(e.status)
+          .json({ status: e.status, message: e.message });
+      } else {
+        throw e;
+      }
     }
-  });
-
-  await Promise.all(promises);
-
-  const session = await stripe.checkout.sessions.create({
-    mode: "subscription",
-    payment_method_types: ["card"],
-    customer: stripeCustomerId,
-    discounts: [
-      {
-        coupon: org.discountCode,
-      },
-    ],
-    line_items: [
-      {
-        price: org.priceId || STRIPE_PRICE,
-        quantity: qty,
-      },
-    ],
-    success_url: `${APP_ORIGIN}/settings/team?org=${org.id}&subscription-success-session={CHECKOUT_SESSION_ID}`,
-    cancel_url: `${APP_ORIGIN}${returnUrl}?org=${org.id}`,
-  });
-  res.status(200).json({
-    status: 200,
-    session,
-  });
+  };
 }
 
-export async function getSubscriptionQuote(req: AuthRequest, res: Response) {
-  req.checkPermissions("manageBilling");
+export const postNewProTrialSubscription = withLicenseServerErrorHandling(
+  async function (
+    req: AuthRequest<{ name: string; email?: string }>,
+    res: Response
+  ) {
+    const { name: nameFromForm, email: emailFromForm } = req.body;
 
-  if (!IS_CLOUD) {
-    return res.status(200).json({
-      status: 200,
-      quote: null,
+    const context = getContextFromReq(req);
+
+    const { org, userName, email } = context;
+
+    if (!context.permissions.canManageBilling()) {
+      context.permissions.throwPermissionError();
+    }
+
+    const qty = getNumberOfUniqueMembersAndInvites(org);
+
+    const result = await postNewProTrialSubscriptionToLicenseServer(
+      org.id,
+      org.name,
+      nameFromForm || userName,
+      emailFromForm || email,
+      qty
+    );
+    if (!org.licenseKey) {
+      await updateOrganization(org.id, { licenseKey: result.license.id });
+    } else {
+      if (org.licenseKey !== result.license.id) {
+        throw new Error("Your organization already has a license key.");
+      }
+      await licenseInit(org, getUserCodesForOrg, getLicenseMetaData, true);
+    }
+
+    res.status(200).json(result);
+  }
+);
+
+export const postNewProSubscription = withLicenseServerErrorHandling(
+  async function (req: AuthRequest<{ returnUrl: string }>, res: Response) {
+    let { returnUrl } = req.body;
+
+    if (returnUrl?.[0] !== "/") {
+      returnUrl = "/settings/billing";
+    }
+
+    const context = getContextFromReq(req);
+
+    if (!context.permissions.canManageBilling()) {
+      context.permissions.throwPermissionError();
+    }
+
+    const { org, userName } = context;
+
+    const qty = getNumberOfUniqueMembersAndInvites(org);
+
+    const result = await postNewProSubscriptionToLicenseServer(
+      org.id,
+      org.name,
+      org.ownerEmail,
+      userName,
+      qty,
+      returnUrl
+    );
+    await updateOrganization(org.id, { licenseKey: result.license.id });
+
+    res.status(200).json(result);
+  }
+);
+
+export const postCreateBillingSession = withLicenseServerErrorHandling(
+  async function (req: AuthRequest, res: Response) {
+    const context = getContextFromReq(req);
+
+    if (!context.permissions.canManageBilling()) {
+      context.permissions.throwPermissionError();
+    }
+
+    const { org } = context;
+
+    const license = await getLicense(org.licenseKey);
+
+    let url;
+    let status;
+    if (license?.id) {
+      const results = await postCreateBillingSessionToLicenseServer(license.id);
+      url = results.url;
+      status = results.status;
+    } else {
+      // TODO: Remove once all orgs have moved license info off of the org
+      if (!org.stripeCustomerId) {
+        throw new Error("Missing customer id");
+      }
+
+      ({ url } = await stripe.billingPortal.sessions.create({
+        customer: org.stripeCustomerId,
+        return_url: `${APP_ORIGIN}/settings/billing?org=${org.id}`,
+      }));
+
+      status = 200;
+    }
+
+    res.status(status).json({
+      status: status,
+      url,
     });
   }
+);
 
-  const { org } = getOrgFromReq(req);
+export const postSubscriptionSuccess = withLicenseServerErrorHandling(
+  async function (
+    req: AuthRequest<{ checkoutSessionId: string }>,
+    res: Response
+  ) {
+    const context = getContextFromReq(req);
 
-  const price = await getPrice(org.priceId || STRIPE_PRICE);
-  const unitPrice = (price?.unit_amount || 2000) / 100;
+    if (!context.permissions.canManageBilling()) {
+      context.permissions.throwPermissionError();
+    }
 
-  const coupon = await getCoupon(org.discountCode);
-  const discountAmount = (-1 * (coupon?.amount_off || 0)) / 100;
-  const discountMessage = coupon?.name || "";
+    const { org } = context;
+    const result = await postNewSubscriptionSuccessToLicenseServer(
+      req.body.checkoutSessionId
+    );
+    org.licenseKey = result.id;
+    await updateOrganization(org.id, { licenseKey: result.id });
 
-  // TODO: handle pricing tiers
-  const additionalSeatPrice = unitPrice;
-  const activeAndInvitedUsers = getNumberOfUniqueMembersAndInvites(org);
-  const currentSeatsPaidFor = org.subscription?.qty || 0;
-  const subtotal = activeAndInvitedUsers * unitPrice;
-  const total = Math.max(0, subtotal + discountAmount);
+    // update license info from the license server as it will have changed.
+    await licenseInit(org, getUserCodesForOrg, getLicenseMetaData, true);
 
-  const quote: SubscriptionQuote = {
-    activeAndInvitedUsers,
-    currentSeatsPaidFor,
-    unitPrice,
-    discountAmount,
-    discountMessage,
-    subtotal,
-    total,
-    additionalSeatPrice,
-  };
-
-  return res.status(200).json({
-    status: 200,
-    quote,
-  });
-}
-
-export async function postCreateBillingSession(
-  req: AuthRequest,
-  res: Response
-) {
-  req.checkPermissions("manageBilling");
-
-  const { org } = getOrgFromReq(req);
-
-  if (!org.stripeCustomerId) {
-    throw new Error("Missing customer id");
+    res.status(200).json({
+      status: 200,
+    });
   }
-
-  const { url } = await stripe.billingPortal.sessions.create({
-    customer: org.stripeCustomerId,
-    return_url: `${APP_ORIGIN}/settings/billing?org=${org.id}`,
-  });
-
-  res.status(200).json({
-    status: 200,
-    url,
-  });
-}
-
-export async function postSubscriptionSuccess(
-  req: AuthRequest<{ checkoutSessionId: string }>,
-  res: Response
-) {
-  req.checkPermissions("manageBilling");
-
-  const session = await stripe.checkout.sessions.retrieve(
-    req.body.checkoutSessionId
-  );
-
-  const subscription = session.subscription;
-
-  if (!subscription) {
-    throw new Error("No subscription associated with that checkout session");
-  }
-
-  await updateSubscriptionInDb(subscription);
-
-  res.status(200).json({
-    status: 200,
-  });
-}
+);
 
 export async function postWebhook(req: Request, res: Response) {
   const payload: Buffer = req.body;
@@ -219,6 +224,38 @@ export async function postWebhook(req: Request, res: Response) {
         await updateSubscriptionInDb(subscription);
         break;
       }
+
+      case "customer.subscription.trial_will_end": {
+        const responseSubscription = event.data
+          .object as Stripe.Response<Stripe.Subscription>;
+        if (!responseSubscription) return;
+
+        const ret = await updateSubscriptionInDb(responseSubscription);
+        if (!ret) return;
+
+        const { organization, subscription, hasPaymentMethod } = ret;
+        const billingUrl = `${APP_ORIGIN}/settings/billing?org=${organization.id}`;
+        const endDate = subscription.trial_end
+          ? new Date(subscription.trial_end * 1000)
+          : null;
+
+        if (!endDate) {
+          logger.error(
+            "No trial end date found for subscription: " + subscription.id
+          );
+          return;
+        }
+
+        await sendStripeTrialWillEndEmail({
+          email: organization.ownerEmail,
+          organization: organization.name,
+          endDate,
+          hasPaymentMethod,
+          billingUrl,
+        });
+
+        break;
+      }
     }
   } catch (err) {
     req.log.error(err, "Webhook error");
@@ -226,4 +263,50 @@ export async function postWebhook(req: Request, res: Response) {
   }
 
   res.status(200).send("Ok");
+}
+
+export async function getUsage(
+  req: AuthRequest<unknown, unknown, { monthsAgo?: number }>,
+  res: Response<{ status: 200; cdnUsage: DailyUsage[]; limits: UsageLimits }>
+) {
+  const context = getContextFromReq(req);
+
+  if (!context.permissions.canViewUsage()) {
+    context.permissions.throwPermissionError();
+  }
+
+  const monthsAgo = Math.round(req.query.monthsAgo || 0);
+  if (monthsAgo < 0 || monthsAgo > 12) {
+    throw new Error("Usage data only available for the past 12 months");
+  }
+
+  const { org } = context;
+
+  // Beginning of the month
+  const start = new Date();
+  start.setMonth(start.getMonth() - monthsAgo);
+  start.setDate(1);
+  start.setHours(0, 0, 0, 0);
+
+  // End of the month
+  const end = new Date();
+  end.setMonth(end.getMonth() - monthsAgo + 1);
+  end.setDate(0);
+  end.setHours(23, 59, 59, 999);
+
+  const cdnUsage = await getDailyCDNUsageForOrg(org.id, start, end);
+
+  const limits: UsageLimits = {
+    cdnRequests: null,
+    cdnBandwidth: null,
+  };
+
+  const plan = getEffectiveAccountPlan(org);
+  if (plan === "starter" || plan === "pro" || plan === "pro_sso") {
+    // 10 million requests, no bandwidth limit
+    // TODO: Store this limit as part of the license/org instead of hard-coding
+    limits.cdnRequests = 10_000_000;
+  }
+
+  res.json({ status: 200, cdnUsage, limits });
 }

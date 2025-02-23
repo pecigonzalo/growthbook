@@ -1,24 +1,35 @@
-import { FC } from "react";
+import { FC, ReactElement } from "react";
 import { useForm } from "react-hook-form";
-import { useDefinitions } from "@/services/DefinitionsContext";
-import Modal from "../Modal";
-import MultiSelectField from "../Forms/MultiSelectField";
+import Modal from "@/components/Modal";
+import MultiSelectField from "@/components/Forms/MultiSelectField";
+import useProjectOptions from "@/hooks/useProjectOptions";
 
 const EditProjectsForm: FC<{
-  projects: string[];
+  value: string[];
+  permissionRequired: (projectId: string) => boolean;
   save: (projects: string[]) => Promise<void>;
   cancel: () => void;
   mutate: () => void;
-}> = ({ projects = [], save, cancel, mutate }) => {
-  const { projects: projectDefinitions } = useDefinitions();
+  label: ReactElement;
+  entityName?: string;
+}> = ({
+  value = [],
+  permissionRequired,
+  save,
+  cancel,
+  mutate,
+  entityName,
+  label,
+}) => {
   const form = useForm({
     defaultValues: {
-      projects,
+      projects: value,
     },
   });
 
   return (
     <Modal
+      trackingEventModalType=""
       header={"Edit Projects"}
       open={true}
       close={cancel}
@@ -29,16 +40,13 @@ const EditProjectsForm: FC<{
       cta="Save"
     >
       <MultiSelectField
-        label="Projects"
+        label={label}
         placeholder="All projects"
         value={form.watch("projects")}
-        options={projectDefinitions.map((p) => ({
-          value: p.id,
-          label: p.name,
-        }))}
+        options={useProjectOptions(permissionRequired, value)}
         onChange={(v) => form.setValue("projects", v)}
         customClassName="label-overflow-ellipsis"
-        helpText="Assign this metric to specific projects"
+        helpText={`Assign this ${entityName} to specific projects`}
       />
       <div style={{ height: 200 }} />
     </Modal>

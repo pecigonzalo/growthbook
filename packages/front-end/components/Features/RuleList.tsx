@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { FeatureInterface } from "back-end/types/feature";
+import { FeatureInterface, FeatureRule } from "back-end/types/feature";
 import {
   DndContext,
   DragOverlay,
@@ -17,27 +17,51 @@ import {
 } from "@dnd-kit/sortable";
 import { ExperimentInterfaceStringDates } from "back-end/types/experiment";
 import { useAuth } from "@/services/auth";
-import { getRules } from "@/services/features";
-import usePermissions from "@/hooks/usePermissions";
+import {
+  getRules,
+  getUnreachableRuleIndex,
+  isRuleInactive,
+} from "@/services/features";
+import usePermissionsUtil from "@/hooks/usePermissionsUtils";
 import { Rule, SortableRule } from "./Rule";
 
 export default function RuleList({
   feature,
   mutate,
-  experiments,
   environment,
   setRuleModal,
+  setCopyRuleModal,
+  version,
+  setVersion,
+  locked,
+  experimentsMap,
+  hideInactive,
+  isDraft,
 }: {
   feature: FeatureInterface;
-  experiments: Record<string, ExperimentInterfaceStringDates>;
   environment: string;
   mutate: () => void;
-  setRuleModal: ({ environment: string, i: number }) => void;
+  setRuleModal: (args: {
+    environment: string;
+    i: number;
+    defaultType?: string;
+    duplicate?: boolean;
+  }) => void;
+  setCopyRuleModal: (args: {
+    environment: string;
+    rules: FeatureRule[];
+  }) => void;
+  version: number;
+  setVersion: (version: number) => void;
+  locked: boolean;
+  experimentsMap: Map<string, ExperimentInterfaceStringDates>;
+  hideInactive?: boolean;
+  isDraft: boolean;
 }) {
   const { apiCall } = useAuth();
-  const [activeId, setActiveId] = useState<string>(null);
+  const [activeId, setActiveId] = useState<string | null>(null);
   const [items, setItems] = useState(getRules(feature, environment));
-  const permissions = usePermissions();
+  const permissionsUtil = usePermissionsUtil();
 
   useEffect(() => {
     setItems(getRules(feature, environment));
@@ -49,6 +73,8 @@ export default function RuleList({
       coordinateGetter: sortableKeyboardCoordinates,
     })
   );
+
+  const inactiveRules = items.filter((r) => isRuleInactive(r, experimentsMap));
 
   if (!items.length) {
     return (
@@ -65,11 +91,15 @@ export default function RuleList({
     return -1;
   }
 
+  // detect unreachable rules, and get the first rule that is at 100%.
+  const unreachableIndex = getUnreachableRuleIndex(items, experimentsMap);
+
   const activeRule = activeId ? items[getRuleIndex(activeId)] : null;
 
   const canEdit =
-    permissions.check("manageFeatures", feature.project) &&
-    permissions.check("createFeatureDrafts", feature.project);
+    !locked &&
+    permissionsUtil.canViewFeatureModal(feature.project) &&
+    permissionsUtil.canManageFeatureDrafts(feature);
 
   return (
     <DndContext
@@ -81,7 +111,7 @@ export default function RuleList({
           return;
         }
 
-        if (active.id !== over.id) {
+        if (over && active.id !== over.id) {
           const oldIndex = getRuleIndex(active.id);
           const newIndex = getRuleIndex(over.id);
 
@@ -90,15 +120,19 @@ export default function RuleList({
           const newRules = arrayMove(items, oldIndex, newIndex);
 
           setItems(newRules);
-          await apiCall(`/feature/${feature.id}/reorder`, {
-            method: "POST",
-            body: JSON.stringify({
-              environment,
-              from: oldIndex,
-              to: newIndex,
-            }),
-          });
-          mutate();
+          const res = await apiCall<{ version: number }>(
+            `/feature/${feature.id}/${version}/reorder`,
+            {
+              method: "POST",
+              body: JSON.stringify({
+                environment,
+                from: oldIndex,
+                to: newIndex,
+              }),
+            }
+          );
+          await mutate();
+          res.version && setVersion(res.version);
         }
         setActiveId(null);
       }}
@@ -109,30 +143,52 @@ export default function RuleList({
         setActiveId(active.id);
       }}
     >
+      {inactiveRules.length === items.length && hideInactive && (
+        <div className="px-3 mb-3">
+          <em>No Active Rules</em>
+        </div>
+      )}
       <SortableContext items={items} strategy={verticalListSortingStrategy}>
         {items.map(({ ...rule }, i) => (
           <SortableRule
-            key={rule.id}
+            key={i + rule.id}
             environment={environment}
             i={i}
             rule={rule}
             feature={feature}
             mutate={mutate}
-            experiments={experiments}
             setRuleModal={setRuleModal}
+            setCopyRuleModal={setCopyRuleModal}
+            unreachable={!!unreachableIndex && i >= unreachableIndex}
+            version={version}
+            setVersion={setVersion}
+            locked={locked}
+            experimentsMap={experimentsMap}
+            hideInactive={hideInactive}
+            isDraft={isDraft}
           />
         ))}
       </SortableContext>
       <DragOverlay>
         {activeRule ? (
           <Rule
-            i={getRuleIndex(activeId)}
+            i={getRuleIndex(activeId as string)}
             environment={environment}
             rule={activeRule}
             feature={feature}
             mutate={mutate}
-            experiments={experiments}
             setRuleModal={setRuleModal}
+            setCopyRuleModal={setCopyRuleModal}
+            version={version}
+            setVersion={setVersion}
+            locked={locked}
+            experimentsMap={experimentsMap}
+            hideInactive={hideInactive}
+            unreachable={
+              !!unreachableIndex &&
+              getRuleIndex(activeId as string) >= unreachableIndex
+            }
+            isDraft={isDraft}
           />
         ) : null}
       </DragOverlay>

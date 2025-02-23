@@ -1,7 +1,7 @@
 import crypto from "crypto";
 import { Request } from "express";
 import mongoose from "mongoose";
-import { UserInterface } from "../../types/user";
+import { UserInterface } from "back-end/types/user";
 
 export interface AuthRefreshInterface {
   token: string;
@@ -30,7 +30,7 @@ const authRefreshSchema = new mongoose.Schema({
 
 export type AuthRefreshDocument = mongoose.Document & AuthRefreshInterface;
 
-export const AuthRefreshModel = mongoose.model<AuthRefreshDocument>(
+export const AuthRefreshModel = mongoose.model<AuthRefreshInterface>(
   "AuthRefresh",
   authRefreshSchema
 );

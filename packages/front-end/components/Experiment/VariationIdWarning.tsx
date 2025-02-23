@@ -4,8 +4,9 @@ import {
   ExperimentReportResultDimension,
   ExperimentReportVariation,
 } from "back-end/types/report";
-import usePermissions from "@/hooks/usePermissions";
+import { DataSourceInterfaceWithParams } from "back-end/types/datasource";
 import FixVariationIds from "@/components/Experiment/FixVariationIds";
+import usePermissionsUtil from "@/hooks/usePermissionsUtils";
 
 const CommaList: FC<{ vals: string[] }> = ({ vals }) => {
   if (!vals.length) {
@@ -25,12 +26,13 @@ const CommaList: FC<{ vals: string[] }> = ({ vals }) => {
 };
 
 const VariationIdWarning: FC<{
-  results: ExperimentReportResultDimension;
+  results?: ExperimentReportResultDimension;
   isUpdating?: boolean;
   variations: ExperimentReportVariation[];
   unknownVariations: string[];
   setVariationIds?: (ids: string[]) => Promise<void>;
   project?: string;
+  datasource?: DataSourceInterfaceWithParams | null;
 }> = ({
   isUpdating,
   results,
@@ -38,10 +40,10 @@ const VariationIdWarning: FC<{
   unknownVariations,
   setVariationIds,
   project,
+  datasource,
 }) => {
   const [idModal, setIdModal] = useState(false);
-
-  const permissions = usePermissions();
+  const permissionsUtil = usePermissionsUtil();
 
   if (!results) return null;
   const variationResults = results?.variations || [];
@@ -97,7 +99,7 @@ const VariationIdWarning: FC<{
   if (unknownVariations?.length > 0) {
     return (
       <div className="px-3">
-        {idModal && (
+        {idModal && setVariationIds && (
           <FixVariationIds
             close={() => setIdModal(false)}
             expected={definedVariations}
@@ -116,8 +118,9 @@ const VariationIdWarning: FC<{
           (<CommaList vals={returnedVariations} />
           ).{" "}
           {setVariationIds &&
-            permissions.check("runQueries", "") &&
-            permissions.check("createAnalyses", project) && (
+            datasource &&
+            permissionsUtil.canRunExperimentQueries(datasource) &&
+            permissionsUtil.canViewExperimentModal(project) && (
               <button
                 className="btn btn-info btn-sm ml-3"
                 type="button"

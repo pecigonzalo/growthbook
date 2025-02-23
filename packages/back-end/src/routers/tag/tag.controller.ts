@@ -1,13 +1,14 @@
 import type { Response } from "express";
-import { AuthRequest } from "../../types/AuthRequest";
-import { ApiErrorResponse } from "../../../types/api";
-import { getOrgFromReq } from "../../services/organizations";
-import { TagInterface } from "../../../types/tag";
-import { addTag, removeTag } from "../../models/TagModel";
-import { removeTagInMetrics } from "../../models/MetricModel";
-import { removeTagInFeature } from "../../models/FeatureModel";
-import { removeTagFromSlackIntegration } from "../../models/SlackIntegrationModel";
-import { removeTagFromExperiments } from "../../models/ExperimentModel";
+import { AuthRequest } from "back-end/src/types/AuthRequest";
+import { ApiErrorResponse } from "back-end/types/api";
+import { getContextFromReq } from "back-end/src/services/organizations";
+import { TagInterface } from "back-end/types/tag";
+import { addTag, removeTag } from "back-end/src/models/TagModel";
+import { removeTagInMetrics } from "back-end/src/models/MetricModel";
+import { removeTagInFeature } from "back-end/src/models/FeatureModel";
+import { removeTagFromSlackIntegration } from "back-end/src/models/SlackIntegrationModel";
+import { removeTagFromExperiments } from "back-end/src/models/ExperimentModel";
+import { EventUserForResponseLocals } from "back-end/src/events/event-types";
 
 // region POST /tag
 
@@ -27,19 +28,19 @@ export const postTag = async (
   req: CreateTagRequest,
   res: Response<CreateTagResponse>
 ) => {
-  req.checkPermissions("manageTags");
+  const context = getContextFromReq(req);
 
-  const { org } = getOrgFromReq(req);
+  if (!context.permissions.canCreateAndUpdateTag()) {
+    context.permissions.throwPermissionError();
+  }
   const { id, color, description } = req.body;
 
-  await addTag(org.id, id, color, description);
+  await addTag(context.org.id, id, color, description);
 
   res.status(200).json({
     status: 200,
   });
 };
-
-// endregion POST /tag
 
 // region DELETE /tag/:id
 
@@ -50,23 +51,29 @@ type DeleteTagResponse = {
 };
 
 /**
- * DELETE /tag/:id
+ * DELETE /tag/
  * Delete one tag resource by ID
  * @param req
  * @param res
  */
 export const deleteTag = async (
   req: DeleteTagRequest,
-  res: Response<DeleteTagResponse | ApiErrorResponse>
+  res: Response<
+    DeleteTagResponse | ApiErrorResponse,
+    EventUserForResponseLocals
+  >
 ) => {
-  req.checkPermissions("manageTags");
+  const context = getContextFromReq(req);
 
-  const { org } = getOrgFromReq(req);
-  const { id } = req.params;
+  if (!context.permissions.canDeleteTag()) {
+    context.permissions.throwPermissionError();
+  }
+  const { org } = context;
+  const { id } = req.body;
 
   // experiments
   await removeTagFromExperiments({
-    organization: org,
+    context,
     tag: id,
   });
 
@@ -74,7 +81,7 @@ export const deleteTag = async (
   await removeTagInMetrics(org.id, id);
 
   // features
-  await removeTagInFeature(org, id);
+  await removeTagInFeature(context, id);
 
   // Slack integrations
   await removeTagFromSlackIntegration({ organizationId: org.id, tag: id });

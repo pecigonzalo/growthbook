@@ -1,10 +1,10 @@
 import cloneDeep from "lodash/cloneDeep";
-import { NotificationEventHandler } from "../../notifiers/EventNotifier";
-import { logger } from "../../../util/logger";
-import { getSlackIntegrationsForFilters } from "../../../models/SlackIntegrationModel";
+import { NotificationEventHandler } from "back-end/src/events/notifiers/EventNotifier";
+import { logger } from "back-end/src/util/logger";
+import { getSlackIntegrationsForFilters } from "back-end/src/models/SlackIntegrationModel";
+import { filterEventForEnvironments } from "back-end/src/events/handlers/utils";
 import {
-  filterSlackIntegrationForRelevance,
-  getDataForNotificationEvent,
+  getSlackDataForNotificationEvent,
   getSlackIntegrationContextBlock,
   sendSlackMessage,
 } from "./slack-event-handler-utils";
@@ -12,31 +12,29 @@ import {
 /**
  * handle Slack events. Can be handled individually or with a common handler, depending on needs.
  */
-export const slackEventHandler: NotificationEventHandler = async ({
-  data,
-  event,
-  organizationId,
-  id,
-}) => {
-  const result = getDataForNotificationEvent(data, id);
+export const slackEventHandler: NotificationEventHandler = async (
+  eventNotification
+) => {
+  const result = await getSlackDataForNotificationEvent(eventNotification);
+
   if (!result) {
     // Unsupported events do not return a result
     return;
   }
 
+  const { event, organizationId, data } = eventNotification;
   const { filterData, slackMessage } = result;
-  const { environments, tags, projects } = filterData;
+  const { tags, projects } = filterData;
 
   const slackIntegrations = (
     (await getSlackIntegrationsForFilters({
       organizationId,
       eventName: event,
       tags,
-      environments,
       projects,
     })) || []
-  ).filter((slackIntegration) =>
-    filterSlackIntegrationForRelevance(slackIntegration, data)
+  ).filter(({ environments }) =>
+    filterEventForEnvironments({ event: data, environments })
   );
 
   slackIntegrations.forEach((slackIntegration) => {

@@ -1,19 +1,23 @@
-import { useGrowthBook } from "@growthbook/growthbook-react";
 import { ApiKeyInterface } from "back-end/types/apikey";
+import { TeamInterface } from "back-end/types/team";
 import {
-  AccountPlan,
-  CommercialFeature,
   EnvScopedPermission,
   GlobalPermission,
-  LicenseData,
-  MemberRole,
   ExpandedMember,
   OrganizationInterface,
   OrganizationSettings,
   Permission,
   Role,
   ProjectScopedPermission,
+  UserPermissions,
+  GetOrganizationResponse,
 } from "back-end/types/organization";
+import type {
+  AccountPlan,
+  CommercialFeature,
+  LicenseInterface,
+  SubscriptionInfo,
+} from "enterprise";
 import { SSOConnectionInterface } from "back-end/types/sso-connection";
 import { useRouter } from "next/router";
 import {
@@ -26,61 +30,70 @@ import {
   useState,
 } from "react";
 import * as Sentry from "@sentry/react";
-import { isCloud, isSentryEnabled } from "@/services/env";
+import { GROWTHBOOK_SECURE_ATTRIBUTE_SALT } from "shared/constants";
+import { Permissions, userHasPermission } from "shared/permissions";
+import { getValidDate } from "shared/dates";
+import sha256 from "crypto-js/sha256";
+import { useFeature } from "@growthbook/growthbook-react";
+import {
+  getGrowthBookBuild,
+  getSuperadminDefaultRole,
+  hasFileConfig,
+  isCloud,
+  isMultiOrg,
+  isSentryEnabled,
+  usingSSO,
+} from "@/services/env";
 import useApi from "@/hooks/useApi";
 import { useAuth, UserOrganizations } from "@/services/auth";
-import track from "@/services/track";
-
-type OrgSettingsResponse = {
-  organization: OrganizationInterface;
-  members: ExpandedMember[];
-  roles: Role[];
-  apiKeys: ApiKeyInterface[];
-  enterpriseSSO: SSOConnectionInterface | null;
-  accountPlan: AccountPlan;
-  commercialFeatures: CommercialFeature[];
-  licenseKey?: string;
-};
+import { getJitsuClient, trackPageView } from "@/services/track";
+import { getOrGeneratePageId, growthbook } from "@/services/utils";
 
 export interface PermissionFunctions {
   check(permission: GlobalPermission): boolean;
   check(
     permission: EnvScopedPermission,
-    project: string | undefined,
+    project: string[] | string | undefined,
     envs: string[]
   ): boolean;
   check(
     permission: ProjectScopedPermission,
-    project: string | undefined
+    project: string[] | string | undefined
   ): boolean;
 }
+
+export type Team = Omit<TeamInterface, "members"> & {
+  members?: ExpandedMember[];
+};
 
 export const DEFAULT_PERMISSIONS: Record<GlobalPermission, boolean> = {
   createDimensions: false,
   createPresentations: false,
-  createSegments: false,
+  createMetricGroups: false,
   manageApiKeys: false,
   manageBilling: false,
   manageNamespaces: false,
   manageNorthStarMetric: false,
-  manageProjects: false,
-  manageSavedGroups: false,
   manageTags: false,
-  manageTargetingAttributes: false,
   manageTeam: false,
-  manageWebhooks: false,
+  manageEventWebhooks: false,
   manageIntegrations: false,
   organizationSettings: false,
-  superDelete: false,
-  viewEvents: false,
+  superDeleteReport: false,
+  viewAuditLog: false,
+  readData: false,
+  manageCustomRoles: false,
+  manageCustomFields: false,
 };
 
 export interface UserContextValue {
+  ready?: boolean;
   userId?: string;
   name?: string;
   email?: string;
-  admin?: boolean;
-  license?: LicenseData;
+  superAdmin?: boolean;
+  license?: Partial<LicenseInterface> | null;
+  subscription: SubscriptionInfo | null;
   user?: ExpandedMember;
   users: Map<string, ExpandedMember>;
   getUserDisplay: (id: string, fallback?: boolean) => string;
@@ -88,14 +101,26 @@ export interface UserContextValue {
   refreshOrganization: () => Promise<void>;
   permissions: Record<GlobalPermission, boolean> & PermissionFunctions;
   settings: OrganizationSettings;
-  enterpriseSSO?: SSOConnectionInterface;
+  enterpriseSSO?: Partial<SSOConnectionInterface> | null;
   accountPlan?: AccountPlan;
+  effectiveAccountPlan?: AccountPlan;
+  licenseError: string;
   commercialFeatures: CommercialFeature[];
   apiKeys: ApiKeyInterface[];
   organization: Partial<OrganizationInterface>;
+  seatsInUse: number;
   roles: Role[];
+  teams?: Team[];
   error?: string;
   hasCommercialFeature: (feature: CommercialFeature) => boolean;
+  commercialFeatureLowestPlan?: Partial<Record<CommercialFeature, AccountPlan>>;
+  permissionsUtil: Permissions;
+  watching: {
+    experiments: string[];
+    features: string[];
+  };
+  canSubscribe: boolean;
+  freeSeats: number;
 }
 
 interface UserResponse {
@@ -104,9 +129,9 @@ interface UserResponse {
   userName: string;
   email: string;
   verified: boolean;
-  admin: boolean;
+  superAdmin: boolean;
   organizations?: UserOrganizations;
-  license?: LicenseData;
+  currentUserPermissions: UserPermissions;
 }
 
 export const UserContext = createContext<UserContextValue>({
@@ -124,7 +149,25 @@ export const UserContext = createContext<UserContextValue>({
   },
   apiKeys: [],
   organization: {},
+  subscription: null,
+  licenseError: "",
+  seatsInUse: 0,
+  teams: [],
   hasCommercialFeature: () => false,
+  permissionsUtil: new Permissions({
+    global: {
+      permissions: {},
+      limitAccessByEnvironment: false,
+      environments: [],
+    },
+    projects: {},
+  }),
+  watching: {
+    experiments: [],
+    features: [],
+  },
+  canSubscribe: false,
+  freeSeats: 3,
 });
 
 export function useUser() {
@@ -134,46 +177,49 @@ export function useUser() {
 let currentUser: null | {
   id: string;
   org: string;
-  role: MemberRole;
+  role: string;
+  effectiveAccountPlan: string;
+  orgCreationDate: string;
 } = null;
 export function getCurrentUser() {
   return currentUser;
 }
 
-export function getPermissionsByRole(
-  role: MemberRole,
-  roles: Role[]
-): Set<Permission> {
-  return new Set<Permission>(
-    roles.find((r) => r.id === role)?.permissions || []
-  );
-}
-
 export function UserContextProvider({ children }: { children: ReactNode }) {
-  const { isAuthenticated, apiCall, orgId, setOrganizations } = useAuth();
+  const { isAuthenticated, orgId, setOrganizations } = useAuth();
 
-  const [data, setData] = useState<null | UserResponse>(null);
-  const [error, setError] = useState("");
+  const selfServePricingEnabled = useFeature("self-serve-billing").on;
+
+  const { data, mutate: mutateUser, error } = useApi<UserResponse>(`/user`, {
+    shouldRun: () => isAuthenticated,
+    orgScoped: false,
+  });
+
+  const updateUser = useCallback(async () => {
+    await mutateUser();
+  }, [mutateUser]);
+
   const router = useRouter();
 
   const {
     data: currentOrg,
     mutate: refreshOrganization,
-  } = useApi<OrgSettingsResponse>(`/organization`);
+    error: orgLoadingError,
+  } = useApi<GetOrganizationResponse>(`/organization`, {
+    shouldRun: () => !!orgId,
+  });
 
-  const updateUser = useCallback(async () => {
-    try {
-      const res = await apiCall<UserResponse>("/user", {
-        method: "GET",
-      });
-      setData(res);
-      if (res.organizations) {
-        setOrganizations(res.organizations);
-      }
-    } catch (e) {
-      setError(e.message);
+  const hashedOrganizationId = useMemo(() => {
+    const id = currentOrg?.organization?.id || "";
+    if (!id) return "";
+    return sha256(GROWTHBOOK_SECURE_ATTRIBUTE_SALT + id).toString();
+  }, [currentOrg?.organization?.id]);
+
+  useEffect(() => {
+    if (data?.organizations && setOrganizations) {
+      setOrganizations(data.organizations, data.superAdmin);
     }
-  }, [apiCall, setOrganizations]);
+  }, [data, setOrganizations]);
 
   const users = useMemo(() => {
     const userMap = new Map<string, ExpandedMember>();
@@ -185,7 +231,23 @@ export function UserContextProvider({ children }: { children: ReactNode }) {
     return userMap;
   }, [currentOrg?.members]);
 
-  let user = users.get(data?.userId);
+  const teams = useMemo(() => {
+    return currentOrg?.teams.map((team) => {
+      const hydratedMembers = team.members?.reduce<ExpandedMember[]>(
+        (res, member) => {
+          const user = users.get(member);
+          if (user) {
+            res.push(user);
+          }
+          return res;
+        },
+        []
+      );
+      return { ...team, members: hydratedMembers };
+    });
+  }, [currentOrg?.teams, users]);
+
+  let user = users.get(data?.userId || "");
   if (!user && data) {
     user = {
       email: data.email,
@@ -194,80 +256,103 @@ export function UserContextProvider({ children }: { children: ReactNode }) {
       environments: [],
       limitAccessByEnvironment: false,
       name: data.userName,
-      role: data.admin ? "admin" : "readonly",
+      role: data.superAdmin ? getSuperadminDefaultRole() : "readonly",
       projectRoles: [],
     };
   }
-  const role =
-    (data?.admin && "admin") ||
-    (user?.role ?? currentOrg?.organization?.settings?.defaultRole?.role);
-
-  // Build out permissions object for backwards-compatible `permissions.manageTeams` style usage
-  const permissionsObj: Record<GlobalPermission, boolean> = {
-    ...DEFAULT_PERMISSIONS,
-  };
-  getPermissionsByRole(role, currentOrg?.roles || []).forEach((p) => {
-    permissionsObj[p] = true;
-  });
 
   // Update current user data for telemetry data
   useEffect(() => {
     currentUser = {
       org: orgId || "",
       id: data?.userId || "",
-      role: role,
+      role: user?.role || "",
+      effectiveAccountPlan: currentOrg?.effectiveAccountPlan ?? "",
+      orgCreationDate: currentOrg?.organization?.dateCreated
+        ? getValidDate(currentOrg.organization.dateCreated).toISOString()
+        : "",
     };
-  }, [orgId, data?.userId, role]);
-
-  // Refresh organization data when switching orgs
-  useEffect(() => {
-    if (orgId) {
-      void refreshOrganization();
-      track("Organization Loaded");
-    }
-  }, [orgId, refreshOrganization]);
-
-  // Once authenticated, get userId, orgId from API
-  useEffect(() => {
-    if (!isAuthenticated) {
-      return;
-    }
-    void updateUser();
-  }, [isAuthenticated, updateUser]);
-
-  // Refresh user and org after loading license
-  useEffect(() => {
-    if (orgId) {
-      void refreshOrganization();
-    }
-    if (isAuthenticated) {
-      void updateUser();
-    }
   }, [
     orgId,
-    isAuthenticated,
-    currentOrg?.organization?.licenseKey,
-    refreshOrganization,
-    updateUser,
+    currentOrg?.effectiveAccountPlan,
+    currentOrg?.organization,
+    data?.userId,
+    user?.role,
   ]);
 
-  // Update growthbook tarageting attributes
-  const growthbook = useGrowthBook();
+  // User/build GrowthBook attributes
   useEffect(() => {
-    growthbook.setAttributes({
+    let anonymous_id = "";
+    // This is an undocumented way to get the anonymous id from Jitsu
+    // Lots of type guards added to avoid breaking if we update Jitsu in the future
+    const jitsu = getJitsuClient();
+    if (
+      jitsu &&
+      "getAnonymousId" in jitsu &&
+      typeof jitsu.getAnonymousId === "function"
+    ) {
+      const _anonymous_id = jitsu.getAnonymousId();
+      if (typeof _anonymous_id === "string") {
+        anonymous_id = _anonymous_id;
+      }
+    }
+
+    const build = getGrowthBookBuild();
+
+    growthbook.updateAttributes({
+      anonymous_id,
       id: data?.userId || "",
-      name: data?.userName || "",
-      admin: data?.admin || false,
-      company: currentOrg?.organization?.name || "",
-      userAgent: window.navigator.userAgent,
-      url: router?.pathname || "",
+      user_id: data?.userId || "",
+      superAdmin: data?.superAdmin || false,
       cloud: isCloud(),
-      accountPlan: currentOrg?.accountPlan || "unknown",
-      hasLicenseKey: !!data?.license,
+      multiOrg: isMultiOrg(),
+      configFile: hasFileConfig(),
+      usingSSO: usingSSO(),
+      buildSHA: build.sha,
+      buildDate: build.date,
+      buildVersion: build.lastVersion,
+      orgOwnerJobTitle:
+        currentOrg?.organization?.demographicData?.ownerJobTitle,
+      orgOwnerUsageIntents:
+        currentOrg?.organization?.demographicData?.ownerUsageIntents,
+    });
+  }, [
+    data?.superAdmin,
+    data?.userId,
+    currentOrg?.organization?.demographicData?.ownerJobTitle,
+    currentOrg?.organization?.demographicData?.ownerUsageIntents,
+  ]);
+
+  // Org GrowthBook attributes
+  useEffect(() => {
+    growthbook.updateAttributes({
+      role: user?.role || "",
+      organizationId: hashedOrganizationId,
+      cloudOrgId: isCloud() ? currentOrg?.organization?.id || "" : "",
+      orgDateCreated: currentOrg?.organization?.dateCreated
+        ? getValidDate(currentOrg.organization.dateCreated).toISOString()
+        : "",
+      accountPlan: currentOrg?.effectiveAccountPlan || "loading",
+      hasLicenseKey: !!currentOrg?.organization?.licenseKey,
       freeSeats: currentOrg?.organization?.freeSeats || 3,
       discountCode: currentOrg?.organization?.discountCode || "",
     });
-  }, [data, currentOrg, router?.pathname, growthbook]);
+  }, [currentOrg, hashedOrganizationId, user?.role]);
+
+  // Page GrowthBook attributes
+  useEffect(() => {
+    growthbook.setURL(window.location.href);
+    growthbook.updateAttributes({
+      url: router?.pathname || "",
+      page_id: getOrGeneratePageId(),
+    });
+  }, [router?.pathname]);
+
+  // Track logged-in page views
+  useEffect(() => {
+    if (!currentOrg?.organization?.id) return;
+    trackPageView(router.pathname);
+  }, [router?.pathname, currentOrg?.organization?.id]);
 
   useEffect(() => {
     if (!data?.email) return;
@@ -285,80 +370,142 @@ export function UserContextProvider({ children }: { children: ReactNode }) {
   const permissionsCheck = useCallback(
     (
       permission: Permission,
-      project?: string | undefined,
+      project?: string[] | string,
       envs?: string[]
     ): boolean => {
-      // Get the role based on the project (if specified)
-      // Fall back to the user's global role
-      const projectRole =
-        (project && user?.projectRoles?.find((r) => r.project === project)) ||
-        user;
-
-      // Missing role entirely, deny access
-      if (!projectRole) {
+      if (!currentOrg?.currentUserPermissions || !currentOrg || !data?.userId)
         return false;
-      }
 
-      // Admin role always has permission
-      if (projectRole.role === "admin") return true;
-
-      const permissions = getPermissionsByRole(
-        projectRole.role,
-        currentOrg?.roles || []
+      return userHasPermission(
+        currentOrg.currentUserPermissions,
+        permission,
+        project,
+        envs ? [...envs] : undefined
       );
-
-      // Missing permission
-      if (!permissions.has(permission)) {
-        return false;
-      }
-
-      // If it's an environment-scoped permission and the user's role has limited access
-      if (envs && projectRole.limitAccessByEnvironment) {
-        for (let i = 0; i < envs.length; i++) {
-          if (!projectRole.environments.includes(envs[i])) {
-            return false;
-          }
-        }
-      }
-
-      // If it got through all the above checks, the user has permission
-      return true;
     },
-    [currentOrg?.roles, user]
+    [currentOrg, data?.userId]
   );
+
+  const permissions = useMemo(() => {
+    // Build out permissions object for backwards-compatible `permissions.manageTeams` style usage
+    const permissions: Record<GlobalPermission, boolean> = {
+      ...DEFAULT_PERMISSIONS,
+    };
+
+    for (const permission in permissions) {
+      permissions[permission] =
+        currentOrg?.currentUserPermissions?.global.permissions[permission] ||
+        false;
+    }
+
+    return {
+      ...permissions,
+      check: permissionsCheck,
+    };
+  }, [
+    currentOrg?.currentUserPermissions?.global.permissions,
+    permissionsCheck,
+  ]);
+
+  const permissionsUtil = useMemo(() => {
+    return new Permissions(
+      currentOrg?.currentUserPermissions || {
+        global: {
+          permissions: {},
+          limitAccessByEnvironment: false,
+          environments: [],
+        },
+        projects: {},
+      }
+    );
+  }, [currentOrg?.currentUserPermissions]);
+
+  const getUserDisplay = useCallback(
+    (id: string, fallback = true) => {
+      const u = users.get(id);
+      if (!u && fallback) return id;
+      return u?.name || u?.email || "";
+    },
+    [users]
+  );
+
+  const watching = useMemo(() => {
+    return {
+      experiments: currentOrg?.watching?.experiments || [],
+      features: currentOrg?.watching?.features || [],
+    };
+  }, [currentOrg]);
+
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    if (data) setReady(true);
+  }, [data]);
+
+  const organization: Partial<OrganizationInterface> | undefined =
+    currentOrg?.organization;
+  const subscription = currentOrg?.subscription || null;
+  const license = currentOrg?.license;
+
+  const canSubscribe = useMemo(() => {
+    const disableSelfServeBilling =
+      organization?.disableSelfServeBilling || false;
+
+    if (disableSelfServeBilling) return false;
+
+    if (organization?.enterprise) return false; //TODO: Remove this once we have moved the license off the organization
+
+    if (license?.plan === "enterprise") return false;
+
+    // if already on pro, they must have a subscription - some self-hosted pro have an annual contract not directly through stripe.
+    if (
+      license &&
+      ["pro", "pro_sso"].includes(license.plan || "") &&
+      !subscription?.externalId
+    )
+      return false;
+
+    if (!selfServePricingEnabled) return false;
+
+    if (["active", "trialing", "past_due"].includes(subscription?.status || ""))
+      return false;
+
+    return true;
+  }, [organization, license, subscription, selfServePricingEnabled]);
 
   return (
     <UserContext.Provider
       value={{
+        ready: ready,
         userId: data?.userId,
         name: data?.userName,
         email: data?.email,
-        admin: data?.admin,
+        superAdmin: data?.superAdmin,
         updateUser,
         user,
         users,
-        getUserDisplay: (id, fallback = true) => {
-          const u = users.get(id);
-          if (!u && fallback) return id;
-          return u?.name || u?.email;
-        },
-        refreshOrganization: async () => {
-          await refreshOrganization();
-        },
+        getUserDisplay: getUserDisplay,
+        refreshOrganization: refreshOrganization as () => Promise<void>,
         roles: currentOrg?.roles || [],
-        permissions: {
-          ...permissionsObj,
-          check: permissionsCheck,
-        },
+        permissions,
+        permissionsUtil,
         settings: currentOrg?.organization?.settings || {},
-        license: data?.license,
-        enterpriseSSO: currentOrg?.enterpriseSSO,
+        license,
+        subscription,
+        enterpriseSSO: currentOrg?.enterpriseSSO || undefined,
         accountPlan: currentOrg?.accountPlan,
+        effectiveAccountPlan: currentOrg?.effectiveAccountPlan,
+        commercialFeatureLowestPlan: currentOrg?.commercialFeatureLowestPlan,
+        licenseError: currentOrg?.licenseError || "",
         commercialFeatures: currentOrg?.commercialFeatures || [],
         apiKeys: currentOrg?.apiKeys || [],
-        organization: currentOrg?.organization,
-        error,
+        organization: organization || {},
+        seatsInUse: currentOrg?.seatsInUse || 0,
+        teams,
+        error: error?.message || orgLoadingError?.message,
         hasCommercialFeature: (feature) => commercialFeatures.has(feature),
+        watching: watching,
+        canSubscribe,
+        freeSeats: organization?.freeSeats || 3,
       }}
     >
       {children}

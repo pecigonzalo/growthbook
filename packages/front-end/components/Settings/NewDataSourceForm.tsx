@@ -3,12 +3,22 @@ import {
   useState,
   useEffect,
   ChangeEventHandler,
-  ReactElement,
+  useCallback,
+  ReactNode,
 } from "react";
-import { DataSourceInterfaceWithParams } from "back-end/types/datasource";
+import {
+  DataSourceInterfaceWithParams,
+  SchemaFormat,
+} from "back-end/types/datasource";
 import { useForm } from "react-hook-form";
+import { isDemoDatasourceProject } from "shared/demo-datasource";
+import { FaExternalLinkAlt } from "react-icons/fa";
 import { useAuth } from "@/services/auth";
 import track from "@/services/track";
+import {
+  createInitialResources,
+  getInitialDatasourceResources,
+} from "@/services/initial-resources";
 import { getInitialSettings } from "@/services/datasources";
 import {
   eventSchemas,
@@ -17,67 +27,56 @@ import {
 } from "@/services/eventSchema";
 import MultiSelectField from "@/components/Forms/MultiSelectField";
 import { useDefinitions } from "@/services/DefinitionsContext";
-import SelectField from "../Forms/SelectField";
-import Field from "../Forms/Field";
-import Modal from "../Modal";
-import { GBCircleArrowLeft } from "../Icons";
+import Field from "@/components/Forms/Field";
+import Modal from "@/components/Modal";
+import { GBCircleArrowLeft } from "@/components/Icons";
+import usePermissionsUtil from "@/hooks/usePermissionsUtils";
+import useProjectOptions from "@/hooks/useProjectOptions";
+import Tooltip from "@/components/Tooltip/Tooltip";
+import { useOrganizationMetricDefaults } from "@/hooks/useOrganizationMetricDefaults";
+import useOrgSettings from "@/hooks/useOrgSettings";
+import Callout from "@/components/Radix/Callout";
+import { DocLink } from "@/components/DocLink";
+import DataSourceTypeSelector from "@/components/Settings/DataSourceTypeSelector";
 import EventSourceList from "./EventSourceList";
 import ConnectionSettings from "./ConnectionSettings";
 
+type Step =
+  | "initial"
+  | "eventTracker"
+  | "connection"
+  | "schemaOptions"
+  | "done";
+
+const schemasMap = new Map(eventSchemas.map((o) => [o.value, o]));
+
 const NewDataSourceForm: FC<{
-  data: Partial<DataSourceInterfaceWithParams>;
-  existing: boolean;
+  initial?: Partial<DataSourceInterfaceWithParams>;
   source: string;
   onCancel?: () => void;
   onSuccess: (id: string) => Promise<void>;
-  importSampleData?: (source: string) => Promise<void>;
+  showImportSampleData: boolean;
   inline?: boolean;
-  secondaryCTA?: ReactElement;
+  showBackButton?: boolean;
 }> = ({
-  data,
+  initial,
   onSuccess,
   onCancel,
   source,
-  existing,
-  importSampleData,
   inline,
-  secondaryCTA,
+  showBackButton = true,
 }) => {
-  const { projects, project } = useDefinitions();
-  const [step, setStep] = useState(0);
-  const [schema, setSchema] = useState("");
-  const [dataSourceId, setDataSourceId] = useState<string | null>(
-    data?.id || null
-  );
-  const [possibleTypes, setPossibleTypes] = useState(
-    dataSourceConnections.map((d) => d.type)
-  );
+  const {
+    projects: allProjects,
+    project,
+    mutateDefinitions,
+  } = useDefinitions();
+  const permissionsUtil = usePermissionsUtil();
+  const { apiCall, orgId } = useAuth();
 
-  const [datasource, setDatasource] = useState<
-    Partial<DataSourceInterfaceWithParams>
-  >(data);
-  const [lastError, setLastError] = useState("");
-  const DEFAULT_DATA_SOURCE: Partial<DataSourceInterfaceWithParams> = {
-    name: "My Datasource",
-    settings: {},
-  };
-  const form = useForm({
-    defaultValues: {
-      settings: data?.settings || DEFAULT_DATA_SOURCE.settings,
-    },
-  });
-  const schemasMap = new Map();
-  const dataSourcesMap = new Map();
-  eventSchemas.forEach((o) => {
-    schemasMap.set(o.value, o);
-  });
-  dataSourceConnections.forEach((d) => {
-    dataSourcesMap.set(d.type, d);
-  });
-  const selectedSchema = schemasMap.get(schema) || {
-    value: "custom",
-    label: "Custom",
-  };
+  const settings = useOrgSettings();
+  const { metricDefaults } = useOrganizationMetricDefaults();
+
   useEffect(() => {
     track("View Datasource Form", {
       source,
@@ -85,68 +84,183 @@ const NewDataSourceForm: FC<{
     });
   }, [source]);
 
-  const { apiCall } = useAuth();
+  const [step, setStep] = useState<Step>("initial");
 
-  if (!datasource) {
-    return null;
+  // Form data for the event tracker screen
+  const [eventTracker, setEventTracker] = useState<SchemaFormat | "">("");
+
+  // Form data for the main connection screen
+  const [connectionInfo, setConnectionInfo] = useState<
+    Partial<DataSourceInterfaceWithParams>
+  >({
+    name: "My Datasource",
+    settings: {},
+    projects: project ? [project] : [],
+    ...initial,
+  });
+
+  // Form data for the schema options screen
+  const schemaOptionsForm = useForm<Record<string, string | number>>({
+    defaultValues: {},
+  });
+
+  // Progress for the resource creation screen (final screen)
+  const [resourceProgress, setResourceProgress] = useState(0);
+  const [creatingResources, setCreatingResources] = useState(false);
+
+  // Holds the final data source object
+  const [
+    createdDatasource,
+    setCreatedDatasource,
+  ] = useState<DataSourceInterfaceWithParams | null>(null);
+
+  const possibleSchemas = eventSchemas
+    .filter(
+      (s) => connectionInfo.type && s.types?.includes(connectionInfo.type)
+    )
+    .map((s) => s.value);
+
+  const [lastError, setLastError] = useState("");
+
+  const setSchemaSettings = useCallback(
+    (s: eventSchema) => {
+      setEventTracker(s.value);
+      track("Selected Event Schema", {
+        schema: s.value,
+        source,
+        newDatasourceForm: true,
+      });
+
+      setConnectionInfo((connectionInfo) => ({
+        ...connectionInfo,
+        settings: {
+          schemaFormat: s.value,
+        },
+      }));
+
+      if (s.options) {
+        s.options.forEach((o) => {
+          schemaOptionsForm.setValue(o.name, o.defaultValue || "");
+        });
+      } else {
+        schemaOptionsForm.reset({});
+      }
+    },
+    [schemaOptionsForm, source]
+  );
+
+  useEffect(() => {
+    if (initial?.type) {
+      if (
+        initial.type !== "mixpanel" &&
+        eventSchemas.some(
+          (s) => initial.type && s.types?.includes(initial.type)
+        )
+      ) {
+        setStep("eventTracker");
+      } else {
+        setStep("connection");
+      }
+    }
+  }, [initial?.type]);
+
+  const selectedSchema: eventSchema = schemasMap.get(
+    eventTracker || "custom"
+  ) || {
+    label: "Custom",
+    value: "custom",
+  };
+
+  // Filter out demo datasource from available projects
+  const projects = allProjects.filter(
+    (p) =>
+      !isDemoDatasourceProject({
+        projectId: p.id,
+        organizationId: orgId || "",
+      })
+  );
+  const projectOptions = useProjectOptions(
+    (project) =>
+      permissionsUtil.canCreateDataSource({
+        projects: [project],
+        type: undefined,
+      }),
+    []
+  );
+
+  let ctaEnabled = true;
+  let disabledMessage: string | null = null;
+  if (!permissionsUtil.canViewCreateDataSourceModal(project)) {
+    ctaEnabled = false;
+    disabledMessage = "You don't have permission to create data sources.";
   }
 
-  const saveDataConnection = async () => {
+  const saveConnectionInfo = async (): Promise<DataSourceInterfaceWithParams> => {
     setLastError("");
 
     try {
-      if (!datasource.type) {
+      if (!connectionInfo.type || !connectionInfo.params) {
         throw new Error("Please select a data source type");
       }
 
+      if (connectionInfo.settings && eventTracker) {
+        connectionInfo.settings.schemaFormat = eventTracker;
+      }
+
       // Update
-      if (dataSourceId) {
-        const res = await apiCall<{ status: number; message: string }>(
-          `/datasource/${dataSourceId}`,
-          {
-            method: "PUT",
-            body: JSON.stringify(datasource),
-          }
-        );
+      // Used if someone goes back to this step after already submitting
+      if (createdDatasource) {
+        const res = await apiCall<{
+          datasource: DataSourceInterfaceWithParams;
+        }>(`/datasource/${createdDatasource.id}`, {
+          method: "PUT",
+          body: JSON.stringify({
+            ...connectionInfo,
+          }),
+        });
         track("Updating Datasource Form", {
           source,
-          type: datasource.type,
-          schema: schema,
+          type: connectionInfo.type,
+          schema: eventTracker,
           newDatasourceForm: true,
         });
-        if (res.status > 200) {
-          throw new Error(res.message);
-        }
+
+        setCreatedDatasource(res.datasource);
+        return res.datasource;
       }
       // Create
       else {
-        const res = await apiCall<{ id: string }>(`/datasources`, {
+        const data: Partial<DataSourceInterfaceWithParams> = {
+          ...connectionInfo,
+          settings: {
+            ...getInitialSettings(
+              selectedSchema.value,
+              connectionInfo.params,
+              {}
+            ),
+            ...(connectionInfo.settings || {}),
+          },
+        };
+        const res = await apiCall<{
+          datasource: DataSourceInterfaceWithParams;
+        }>(`/datasources`, {
           method: "POST",
-          body: JSON.stringify({
-            ...datasource,
-            settings: {
-              ...getInitialSettings(
-                selectedSchema.value,
-                datasource.params,
-                form.watch("settings.schemaOptions")
-              ),
-              ...(datasource.settings || {}),
-            },
-          }),
+          body: JSON.stringify(data),
         });
         track("Submit Datasource Form", {
           source,
-          type: datasource.type,
-          schema,
+          type: connectionInfo.type,
+          schema: eventTracker,
           newDatasourceForm: true,
         });
-        setDataSourceId(res.id);
-        return res.id;
+
+        setCreatedDatasource(res.datasource);
+        return res.datasource;
       }
     } catch (e) {
       track("Data Source Form Error", {
         source,
-        type: datasource.type,
+        type: connectionInfo.type,
         error: e.message.substr(0, 32) + "...",
         newDatasourceForm: true,
       });
@@ -155,189 +269,201 @@ const NewDataSourceForm: FC<{
     }
   };
 
-  const updateSettings = async () => {
+  const saveSchemaOptions = async (values: Record<string, string | number>) => {
+    if (!createdDatasource) {
+      throw new Error("No data source created yet");
+    }
+
+    // Re-generate settings with the entered schema options
     const settings = getInitialSettings(
       selectedSchema.value,
-      datasource.params,
-      form.watch("settings.schemaOptions")
+      createdDatasource.params,
+      values
     );
-    if (!dataSourceId) {
-      throw new Error("Could not find existing data source id");
-    }
-    const newVal = {
-      ...datasource,
-      settings,
+
+    const updates: Pick<DataSourceInterfaceWithParams, "settings"> = {
+      settings: {
+        ...settings,
+        schemaOptions: values,
+      },
     };
-    setDatasource(newVal as Partial<DataSourceInterfaceWithParams>);
-    await apiCall<{ status: number; message: string }>(
-      `/datasource/${dataSourceId}`,
+
+    const res = await apiCall<{ datasource: DataSourceInterfaceWithParams }>(
+      `/datasource/${createdDatasource.id}`,
       {
         method: "PUT",
-        body: JSON.stringify(newVal),
+        body: JSON.stringify(updates),
       }
     );
     track("Saving Datasource Query Settings", {
       source,
-      type: datasource.type,
-      schema: schema,
+      type: createdDatasource.type,
+      schema: createdDatasource.settings?.schemaFormat,
       newDatasourceForm: true,
     });
+
+    setCreatedDatasource(res.datasource);
   };
 
   const onChange: ChangeEventHandler<HTMLInputElement | HTMLTextAreaElement> = (
     e
   ) => {
-    setDatasource({
-      ...datasource,
+    setConnectionInfo({
+      ...connectionInfo,
       [e.target.name]: e.target.value,
     });
   };
-  const onManualChange = (name, value) => {
-    setDatasource({
-      ...datasource,
+  const onManualChange = (name: keyof DataSourceInterfaceWithParams, value) => {
+    setConnectionInfo({
+      ...connectionInfo,
       [name]: value,
     });
   };
 
-  const setSchemaSettings = (s: eventSchema) => {
-    setSchema(s.value);
-    form.setValue("settings.schemaFormat", s.value);
-    track("Selected Event Schema", {
-      schema: s.value,
-      source,
-      newDatasourceForm: true,
-    });
-    if (s.types.length === 1) {
-      const data = dataSourcesMap.get(s.types[0]);
-      setDatasource({
-        ...datasource,
-        type: s.types[0],
-        name: `${s.label}`,
-        params: data.default,
-      } as Partial<DataSourceInterfaceWithParams>);
-    } else {
-      setDatasource({
-        name: `${s.label}`,
-        settings: {},
-        projects: project ? [project] : [],
-      });
+  const createResources = (ds: DataSourceInterfaceWithParams) => {
+    if (!ds) {
+      return;
     }
-    setPossibleTypes(s.types);
-    if (s.options) {
-      s.options.map((o) => {
-        form.setValue(`settings.schemaOptions.${o.name}`, o.defaultValue || "");
-      });
-    } else {
-      form.setValue(`settings.schemaOptions`, {});
+
+    const resources = getInitialDatasourceResources({ datasource: ds });
+    if (!resources.factTables.length) {
+      setCreatingResources(false);
+      return;
     }
+
+    setCreatingResources(true);
+    createInitialResources({
+      datasource: ds,
+      onProgress: (progress) => {
+        setResourceProgress(progress);
+      },
+      apiCall,
+      metricDefaults,
+      settings,
+      resources,
+    })
+      .then(() => {
+        track("Creating Datasource Resources", {
+          source,
+          type: ds.type,
+          schema: ds.settings?.schemaFormat,
+          newDatasourceForm: true,
+        });
+      })
+      .catch((e) => {
+        console.error(e);
+      })
+      .finally(() => {
+        mutateDefinitions();
+        setCreatingResources(false);
+      });
   };
 
-  const hasStep2 = !!selectedSchema?.options;
-  const isFinalStep = step === 2 || (!hasStep2 && step === 1);
-  const updateSettingsRequired = isFinalStep && dataSourceId && step !== 1;
-
   const submit =
-    step === 0
-      ? null
-      : async () => {
-          let newDataId = dataSourceId;
-          if (step === 1) {
-            newDataId = await saveDataConnection();
-          }
-          if (updateSettingsRequired) {
-            await updateSettings();
-          }
-          if (isFinalStep) {
-            await onSuccess(newDataId);
-            onCancel && onCancel();
+    step === "initial"
+      ? async () => {
+          if (connectionInfo.type === "mixpanel") {
+            setStep("connection");
+          } else if (possibleSchemas.length > 0) {
+            setStep("eventTracker");
           } else {
-            setStep(step + 1);
+            setStep("connection");
           }
+        }
+      : step === "eventTracker"
+      ? async () => {
+          setStep("connection");
+        }
+      : step === "connection"
+      ? async () => {
+          const ds = await saveConnectionInfo();
+          mutateDefinitions();
+
+          // If the selected schema supports options, go to that step
+          // Otherwise, skip to end
+          if (selectedSchema.options) {
+            setStep("schemaOptions");
+          } else {
+            createResources(ds);
+            setStep("done");
+          }
+        }
+      : step === "schemaOptions"
+      ? schemaOptionsForm.handleSubmit(async (values) => {
+          await saveSchemaOptions(values);
+          createdDatasource && createResources(createdDatasource);
+          setStep("done");
+        })
+      : async () => {
+          // Done
+          await onSuccess(createdDatasource?.id || "");
+          onCancel && onCancel();
         };
 
-  let stepContents: ReactElement;
-  if (step === 0) {
+  let stepContents: ReactNode = null;
+  if (step === "initial") {
     stepContents = (
       <div>
-        <h4>Popular Event Sources</h4>
-        <p>
-          GrowthBook does not store a copy of your data, and instead queries
-          your existing analytics infrastructure. GrowthBook has built-in
-          support for a number of popular event sources.
+        <p className="mb-4">
+          GrowthBook is <strong>Warehouse Native</strong>, which means we sit on
+          top of your existing data instead of storing our own copy. This
+          approach is cheaper, more secure, and more flexible.
         </p>
-        <EventSourceList
-          onSelect={(s) => {
-            setSchemaSettings(s);
-            // jump to next step
-            setStep(1);
-          }}
-        />
-        <div className="my-2">
-          <strong style={{ fontSize: "1.2em" }}>Don&apos;t see yours?</strong>
-        </div>
-        <div className={`row`}>
-          <div className="col-4">
-            <a
-              className={`btn btn-light-hover btn-outline-${
-                "custom" === schema ? "selected" : "primary"
-              } mb-3 py-3`}
-              onClick={(e) => {
-                e.preventDefault();
-                setSchema("custom");
-                setDatasource({
-                  name: "My Datasource",
-                  settings: {},
-                  projects: project ? [project] : [],
-                });
-                // no options for custom:
-                form.setValue(`settings.schemaOptions`, {});
+        <div>
+          <label>Where do you store your analytics data?</label>
 
-                // set to all possible types:
-                setPossibleTypes(dataSourceConnections.map((o) => o.type));
-                // jump to next step
-                setStep(1);
-              }}
-            >
-              <h4>Use Custom Source</h4>
-              <p className="mb-0 text-dark">
-                Manually configure your data schema and analytics queries.
-              </p>
-            </a>
-          </div>
-          {importSampleData && (
-            <div className="col-4">
-              <a
-                className={`btn btn-light-hover btn-outline-${
-                  "custom" === schema ? "selected" : "primary"
-                } mb-3 py-3 ml-auto`}
-                onClick={async (e) => {
-                  e.preventDefault();
-                  await importSampleData("new data source form");
-                }}
-              >
-                <h4>Use Sample Dataset</h4>
-                <p className="mb-0 text-dark">
-                  Explore GrowthBook with a pre-loaded sample dataset.
-                </p>
-              </a>
-            </div>
-          )}
+          <DataSourceTypeSelector
+            value={connectionInfo.type || ""}
+            setValue={(value) => {
+              const option = dataSourceConnections.find(
+                (o) => o.type === value
+              );
+              if (!option) return;
+
+              setLastError("");
+
+              track("Data Source Type Selected", {
+                type: value,
+                newDatasourceForm: true,
+              });
+
+              setConnectionInfo({
+                ...connectionInfo,
+                type: option.type,
+                params: option.default,
+              } as Partial<DataSourceInterfaceWithParams>);
+
+              if (
+                option.type !== "mixpanel" &&
+                eventSchemas.some((s) => s.types?.includes(option.type))
+              ) {
+                setStep("eventTracker");
+              } else {
+                setStep("connection");
+              }
+            }}
+          />
+
+          <Callout status="info" mt="3">
+            Don&apos;t have a data warehouse yet? We recommend using BigQuery
+            with Google Analytics.{" "}
+            <DocLink docSection="ga4BigQuery">
+              Learn more <FaExternalLinkAlt />
+            </DocLink>
+          </Callout>
         </div>
-        {secondaryCTA && (
-          <div className="col-12 text-center">{secondaryCTA}</div>
-        )}
       </div>
     );
-  } else if (step === 1) {
+  } else if (step === "eventTracker") {
     stepContents = (
       <div>
-        <div className="mb-2">
+        <div className="mb-3">
           <a
             href="#"
             onClick={(e) => {
               e.preventDefault();
               setLastError("");
-              setStep(0);
+              setStep("initial");
             }}
           >
             <span style={{ position: "relative", top: "-1px" }}>
@@ -346,56 +472,98 @@ const NewDataSourceForm: FC<{
             Back
           </a>
         </div>
-        <h3>{selectedSchema.label}</h3>
-        {selectedSchema && selectedSchema.intro && (
-          <div className="mb-4">{selectedSchema.intro}</div>
+        {connectionInfo.type ? (
+          <h3>
+            {dataSourceConnections.find((d) => d.type === connectionInfo.type)
+              ?.display || connectionInfo.type}
+          </h3>
+        ) : (
+          <h3>Select Your Event Tracker</h3>
         )}
-        <SelectField
-          label="Data Source Type"
-          value={datasource.type}
-          onChange={(value) => {
-            const option = dataSourceConnections.filter(
-              (o) => o.type === value
-            )[0];
-            if (!option) return;
-
-            setLastError("");
-
-            track("Data Source Type Selected", {
-              type: value,
-              newDatasourceForm: true,
-            });
-
-            setDatasource({
-              ...datasource,
-              type: option.type,
-              params: option.default,
-            } as Partial<DataSourceInterfaceWithParams>);
+        <p>
+          We can pre-populate SQL for a number of common event trackers.
+          Don&apos;t see yours listed? Choose &quot;Custom&quot; to configure it
+          manually.
+        </p>
+        <EventSourceList
+          onSelect={(s) => {
+            setSchemaSettings(s);
+            setStep("connection");
           }}
-          disabled={existing || possibleTypes.length === 1}
-          required
-          autoFocus={true}
-          placeholder="Choose Type..."
-          options={dataSourceConnections
-            .filter((o) => {
-              return !!possibleTypes.includes(o.type);
-            })
-            .map((o) => {
-              return {
-                value: o.type,
-                label: o.display,
-              };
-            })}
+          selected={connectionInfo.settings?.schemaFormat}
+          allowedSchemas={connectionInfo.type ? possibleSchemas : undefined}
         />
+      </div>
+    );
+  } else if (step === "connection") {
+    const datasourceInfo = dataSourceConnections.find(
+      (d) => d.type === connectionInfo.type
+    );
+
+    const headerParts: string[] = [
+      datasourceInfo?.display || connectionInfo.type || "",
+    ];
+    if (connectionInfo.type !== "mixpanel") {
+      headerParts.push(selectedSchema.label);
+    }
+
+    stepContents = (
+      <div>
+        <div className="mb-3">
+          {showBackButton && (
+            <a
+              href="#"
+              onClick={(e) => {
+                e.preventDefault();
+                setLastError("");
+                if (connectionInfo.type === "mixpanel") {
+                  setStep("initial");
+                } else {
+                  setStep("eventTracker");
+                }
+              }}
+            >
+              <span style={{ position: "relative", top: "-1px" }}>
+                <GBCircleArrowLeft />
+              </span>{" "}
+              Back
+            </a>
+          )}
+        </div>
+        <h3>{headerParts.join(" > ")}</h3>
+
+        {datasourceInfo ? (
+          <Callout status="info" mb="3">
+            View docs on connecting{" "}
+            {selectedSchema.helpLink ? (
+              <>
+                <a
+                  href={selectedSchema.helpLink}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {selectedSchema.label} to {datasourceInfo.display}{" "}
+                  <FaExternalLinkAlt />
+                </a>{" "}
+                or{" "}
+              </>
+            ) : null}
+            <DocLink docSection={datasourceInfo.docs}>
+              {datasourceInfo.display} to GrowthBook <FaExternalLinkAlt />
+            </DocLink>{" "}
+          </Callout>
+        ) : null}
+
         <div className="form-group">
-          <label>Display Name</label>
+          <label>Name</label>
           <input
             type="text"
             className="form-control"
             name="name"
             required
             onChange={onChange}
-            value={datasource.name}
+            value={connectionInfo.name}
+            autoFocus={true}
           />
         </div>
         <div className="form-group">
@@ -404,16 +572,23 @@ const NewDataSourceForm: FC<{
             className="form-control"
             name="description"
             onChange={onChange}
-            value={datasource.description}
+            value={connectionInfo.description}
           />
         </div>
         {projects?.length > 0 && (
           <div className="form-group">
             <MultiSelectField
-              label="Projects"
+              label={
+                <>
+                  Projects{" "}
+                  <Tooltip
+                    body={`The dropdown below has been filtered to only include projects where you have permission to create Data Sources.`}
+                  />
+                </>
+              }
               placeholder="All projects"
-              value={datasource.projects || []}
-              options={projects.map((p) => ({ value: p.id, label: p.name }))}
+              value={connectionInfo.projects || []}
+              options={projectOptions}
               onChange={(v) => onManualChange("projects", v)}
               customClassName="label-overflow-ellipsis"
               helpText="Assign this data source to specific projects"
@@ -421,14 +596,14 @@ const NewDataSourceForm: FC<{
           </div>
         )}
         <ConnectionSettings
-          datasource={datasource}
-          existing={existing}
+          datasource={connectionInfo}
+          existing={false}
           hasError={!!lastError}
-          setDatasource={setDatasource}
+          setDatasource={setConnectionInfo}
         />
       </div>
     );
-  } else {
+  } else if (step === "schemaOptions") {
     stepContents = (
       <div>
         <div className="mb-2">
@@ -436,7 +611,7 @@ const NewDataSourceForm: FC<{
             href="#"
             onClick={(e) => {
               e.preventDefault();
-              setStep(1);
+              setStep("connection");
             }}
           >
             <span style={{ position: "relative", top: "-1px" }}>
@@ -445,15 +620,12 @@ const NewDataSourceForm: FC<{
             Back
           </a>
         </div>
-        <div className="alert alert-success mb-3">
-          <strong>Connection successful!</strong>
-        </div>
-        <h3>{schemasMap.get(schema)?.label || ""} Query Options</h3>
+        <h3>{selectedSchema.label || ""} Query Options</h3>
         <div className="my-4">
           <div className="d-inline-block">
             Below are are the typical defaults for{" "}
-            {schemasMap.get(schema)?.label || "this data source"}.{" "}
-            {selectedSchema?.options?.length === 1
+            {selectedSchema.label || "this data source"}.{" "}
+            {selectedSchema.options?.length === 1
               ? "The value "
               : "These values "}
             are used to generate the queries, which you can adjust as needed at
@@ -466,13 +638,10 @@ const NewDataSourceForm: FC<{
               <Field
                 label={label}
                 name={name}
-                value={form.watch(`settings.schemaOptions.${name}`)}
+                value={schemaOptionsForm.watch(name)}
                 type={type}
                 onChange={(e) => {
-                  form.setValue(
-                    `settings.schemaOptions.${name}`,
-                    e.target.value
-                  );
+                  schemaOptionsForm.setValue(name, e.target.value);
                 }}
                 helpText={helpText}
               />
@@ -481,16 +650,70 @@ const NewDataSourceForm: FC<{
         </div>
       </div>
     );
+  } else if (step === "done") {
+    stepContents = (
+      <div>
+        <Callout status="success" mb="3">
+          Connection successful!
+        </Callout>
+
+        {creatingResources ? (
+          <div>
+            <p>Hang tight while we create some metrics to get you started.</p>
+            <div className="progress">
+              <div
+                className="progress-bar"
+                role="progressbar"
+                style={{ width: `${Math.floor(resourceProgress * 100)}%` }}
+                aria-valuenow={resourceProgress}
+                aria-valuemin={0}
+                aria-valuemax={100}
+              />
+            </div>
+          </div>
+        ) : resourceProgress > 0 ? (
+          <div>
+            <p>All done! Now you&apos;re ready to start experimenting.</p>
+          </div>
+        ) : (
+          <div>
+            <p>
+              Now you&apos;re ready to create metrics and start experimenting.
+            </p>
+          </div>
+        )}
+      </div>
+    );
+
+    if (creatingResources) {
+      ctaEnabled = false;
+    }
+  }
+
+  // Disabling the CTA if the user hasn't input a data set to call attention to the "Test Connection" button
+  if (
+    step == "connection" &&
+    connectionInfo.type === "bigquery" &&
+    !connectionInfo.params?.defaultDataset
+  ) {
+    ctaEnabled = false;
+  }
+
+  if (step === "initial" && !connectionInfo.type) {
+    ctaEnabled = false;
   }
 
   return (
     <Modal
+      trackingEventModalType=""
       open={true}
-      header={existing ? "Edit Data Source" : "Add Data Source"}
+      header={"Add Data Source"}
       close={onCancel}
+      disabledMessage={disabledMessage || undefined}
+      ctaEnabled={ctaEnabled}
       submit={submit}
       autoCloseOnSubmit={false}
-      cta={isFinalStep ? (step === 2 ? "Finish" : "Save") : "Next"}
+      cta={step === "done" ? "Finish" : "Next"}
       closeCta="Cancel"
       size="lg"
       error={lastError}

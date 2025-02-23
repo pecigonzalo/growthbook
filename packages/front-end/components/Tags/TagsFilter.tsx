@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { isDefined } from "shared/util";
 import { useLocalStorage } from "@/hooks/useLocalStorage";
 import { useDefinitions } from "@/services/DefinitionsContext";
 import TagsInput from "./TagsInput";
@@ -79,7 +80,8 @@ export default function TagsFilter({
   if (!open && !tags.length) {
     return (
       <a
-        href="#"
+        role="button"
+        className="link-purple"
         onClick={(e) => {
           e.preventDefault();
           setOpen(true);
@@ -101,7 +103,7 @@ export default function TagsFilter({
         prompt={"Filter by tags..."}
         autoFocus={open && autofocus}
         closeMenuOnSelect={true}
-        tagOptions={availableTags.map((t) => getTagById(t)).filter(Boolean)}
+        tagOptions={availableTags.map((t) => getTagById(t)).filter(isDefined)}
         creatable={false}
       />
     </div>

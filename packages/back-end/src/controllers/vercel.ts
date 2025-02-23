@@ -1,31 +1,31 @@
 import fetch from "node-fetch";
 import { Response } from "express";
-import { AuthRequest } from "../types/AuthRequest";
-import { updateOrganization } from "../models/OrganizationModel";
-import { getOrgFromReq } from "../services/organizations";
-import { getAllApiKeysByOrganization } from "../models/ApiKeyModel";
+import { AuthRequest } from "back-end/src/types/AuthRequest";
+import { updateOrganization } from "back-end/src/models/OrganizationModel";
+import { getContextFromReq } from "back-end/src/services/organizations";
+import { getAllApiKeysByOrganization } from "back-end/src/models/ApiKeyModel";
 import {
   GbVercelEnvMap,
   ApiKeyRow,
   VercelEnvVar,
   CreateEnvParams,
-} from "../../types/vercel";
+} from "back-end/types/vercel";
 import {
   createOrgGbKeys,
   getEnvVars,
   getGbRelatedVercelProjects,
   postEnvVar,
   reduceGbVercelEnvMap,
-} from "../services/vercel";
+} from "back-end/src/services/vercel";
 import {
   APP_ORIGIN,
   VERCEL_CLIENT_ID,
   VERCEL_CLIENT_SECRET,
-} from "../util/secrets";
-import { auditDetailsUpdate } from "../services/audit";
+} from "back-end/src/util/secrets";
+import { auditDetailsUpdate } from "back-end/src/services/audit";
 
 export async function getHasToken(req: AuthRequest, res: Response) {
-  const { org } = await getOrgFromReq(req);
+  const { org } = await getContextFromReq(req);
   res.status(200).json({ hasToken: !!org.connections?.vercel?.token });
 }
 
@@ -33,9 +33,12 @@ export async function postToken(
   req: AuthRequest<{ code: string; configurationId: string; teamId: string }>,
   res: Response
 ) {
-  req.checkPermissions("organizationSettings");
   const { code, configurationId, teamId } = req.body;
-  const { org } = getOrgFromReq(req);
+  const context = getContextFromReq(req);
+  if (!context.permissions.canManageOrgSettings()) {
+    context.permissions.throwPermissionError();
+  }
+  const { org } = context;
 
   const url = "https://api.vercel.com/v2/oauth/access_token";
   const options = {
@@ -79,9 +82,13 @@ export async function postEnvVars(
   req: AuthRequest<{ gbVercelEnvMap: GbVercelEnvMap }>,
   res: Response
 ) {
-  req.checkPermissions("organizationSettings");
   const { gbVercelEnvMap } = req.body;
-  const { org } = getOrgFromReq(req);
+  const context = getContextFromReq(req);
+  const { org } = context;
+
+  if (!context.permissions.canManageOrgSettings()) {
+    context.permissions.throwPermissionError();
+  }
 
   if (!org.connections?.vercel)
     throw new Error("Vercel integration does not exist");
@@ -114,9 +121,13 @@ export async function postEnvVars(
 }
 
 export async function getConfig(req: AuthRequest, res: Response) {
-  req.checkPermissions("organizationSettings");
-  const { org } = getOrgFromReq(req);
-  const liveGbKeys = await getAllApiKeysByOrganization(org.id);
+  const context = getContextFromReq(req);
+  const { org } = context;
+
+  if (!context.permissions.canManageOrgSettings()) {
+    context.permissions.throwPermissionError();
+  }
+  const liveGbKeys = await getAllApiKeysByOrganization(context);
 
   if (!org.connections?.vercel)
     throw new Error("Vercel integration does not exist");

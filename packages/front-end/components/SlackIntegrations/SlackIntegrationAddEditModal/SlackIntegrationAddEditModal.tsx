@@ -100,12 +100,14 @@ export const SlackIntegrationAddEditModal: FC<SlackIntegrationAddEditModalProps>
 
   return (
     <Modal
+      trackingEventModalType=""
       header={modalTitle}
       cta={buttonText}
       close={onClose}
       open={isOpen}
       autoCloseOnSubmit={false}
       submit={handleSubmit}
+      // @ts-expect-error TS(2322) If you come across this, please fix it!: Type 'string | null' is not assignable to type 'st... Remove this comment to see the full error message
       error={error}
       ctaEnabled={ctaEnabled}
     >

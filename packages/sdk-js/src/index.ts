@@ -1,5 +1,13 @@
 export type {
-  Context,
+  Options as Context,
+  Options,
+  ClientOptions as MultiUserOptions,
+  ClientOptions,
+  TrackingCallbackWithUser,
+  TrackingDataWithUser,
+  FeatureUsageCallback,
+  FeatureUsageCallbackWithUser,
+  UserContext,
   Attributes,
   Polyfills,
   CacheSettings,
@@ -19,10 +27,74 @@ export type {
   SubscriptionFunction,
   LocalStorageCompat,
   WidenPrimitives,
+  VariationMeta,
+  Filter,
+  VariationRange,
+  UrlTarget,
+  AutoExperiment,
+  AutoExperimentVariation,
+  AutoExperimentChangeType,
+  DOMMutation,
+  UrlTargetType,
+  RenderFunction,
+  StickyAttributeKey,
+  StickyExperimentKey,
+  StickyAssignments,
+  StickyAssignmentsDocument,
+  TrackingData,
+  TrackingCallback,
+  NavigateCallback,
+  ApplyDomChangesCallback,
+  InitOptions,
+  PrefetchOptions,
+  InitResponse,
+  InitSyncOptions,
+  Helpers,
+  GrowthBookPayload,
+  SavedGroupsValues,
+  EventLogger,
+  EventProperties,
+  Plugin,
+  LogUnion,
 } from "./types/growthbook";
 
-export type { ConditionInterface } from "./types/mongrule";
+export type {
+  ConditionInterface,
+  ParentConditionInterface,
+} from "./types/mongrule";
 
-export { setPolyfills, clearCache, configureCache } from "./feature-repository";
+export {
+  setPolyfills,
+  clearCache,
+  configureCache,
+  helpers,
+  onVisible,
+  onHidden,
+} from "./feature-repository";
 
-export { GrowthBook } from "./GrowthBook";
+export { GrowthBook, prefetchPayload } from "./GrowthBook";
+
+export {
+  GrowthBookClient as GrowthBookMultiUser,
+  GrowthBookClient,
+  UserScopedGrowthBook,
+} from "./GrowthBookClient";
+
+export {
+  StickyBucketService,
+  LocalStorageStickyBucketService,
+  ExpressCookieStickyBucketService,
+  BrowserCookieStickyBucketService,
+  RedisStickyBucketService,
+} from "./sticky-bucket-service";
+
+export { evalCondition } from "./mongrule";
+
+export {
+  isURLTargeted,
+  getPolyfills,
+  getAutoExperimentChangeType,
+  paddedVersionString,
+} from "./util";
+
+export { EVENT_EXPERIMENT_VIEWED, EVENT_FEATURE_EVALUATED } from "./core";

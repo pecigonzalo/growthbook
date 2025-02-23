@@ -1,5 +1,5 @@
 import express from "express";
-import { wrapController } from "../wrapController";
+import { wrapController } from "back-end/src/routers/wrapController";
 import * as rawSDKConnectionController from "./sdk-connection.controller";
 
 const router = express.Router();
@@ -11,6 +11,10 @@ router.get("/", sdkConnectionController.getSDKConnections);
 router.post("/", sdkConnectionController.postSDKConnection);
 
 router.put("/:id", sdkConnectionController.putSDKConnection);
+
+router.get("/:id/webhooks", sdkConnectionController.getSDKConnectionWebhooks);
+
+router.post("/:id/webhooks", sdkConnectionController.postSDKConnectionWebhook);
 
 router.delete("/:id", sdkConnectionController.deleteSDKConnection);
 

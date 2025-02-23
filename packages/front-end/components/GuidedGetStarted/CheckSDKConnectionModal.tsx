@@ -1,12 +1,15 @@
 import { SDKConnectionInterface } from "back-end/types/sdk-connection";
-import Modal from "../Modal";
-import CheckSDKConnectionResults from "./CheckSDKConnectionResults";
+import Modal from "@/components/Modal";
+import ConnectionDiagram from "@/components/Features/SDKConnections/ConnectionDiagram";
+import usePermissionsUtil from "@/hooks/usePermissionsUtils";
 
 type Props = {
   close: () => void;
   connection: SDKConnectionInterface;
   mutate: () => Promise<unknown>;
-  goToNextStep: () => void;
+  goToNextStep?: () => void;
+  cta?: string;
+  showModalClose?: boolean;
 };
 
 export default function CheckSDKConnectionModal({
@@ -14,23 +17,26 @@ export default function CheckSDKConnectionModal({
   connection,
   mutate,
   goToNextStep,
+  cta,
+  showModalClose,
 }: Props) {
+  const permissionsUtil = usePermissionsUtil();
+  const canUpdate = permissionsUtil.canUpdateSDKConnection(connection, {});
   return (
     <Modal
+      trackingEventModalType=""
       open={true}
-      close={() => {
-        close();
-      }}
+      close={showModalClose ? close : undefined}
       closeCta="Close"
       size="lg"
-      cta="Next: Add a Data Source"
+      cta={cta}
       header={"Check SDK Connection"}
-      submit={async () => goToNextStep()}
+      submit={async () => goToNextStep?.()}
     >
-      <CheckSDKConnectionResults
+      <ConnectionDiagram
         connection={connection}
         mutate={mutate}
-        close={close}
+        canUpdate={canUpdate}
       />
     </Modal>
   );

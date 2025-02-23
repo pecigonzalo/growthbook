@@ -9,18 +9,13 @@
       "version": "detect"
     },
     "import/parsers": {
-      "@typescript-eslint/parser": [
-        ".ts",
-        ".tsx"
-      ]
+      "@typescript-eslint/parser": [".ts", ".tsx"]
     },
     "import/resolver": {
       "node": true,
       "typescript": {
         "alwaysTryTypes": true,
-        "project": [
-          "packages/*/tsconfig.json"
-        ]
+        "project": ["packages/*/tsconfig.json"]
       }
     }
   },
@@ -29,7 +24,8 @@
     "react",
     "@typescript-eslint",
     "prettier",
-    "@next/eslint-plugin-next"
+    "@next/eslint-plugin-next",
+    "no-async-foreach"
   ],
   "extends": [
     "eslint:recommended",
@@ -54,10 +50,16 @@
     "SharedArrayBuffer": "readonly"
   },
   "rules": {
-    "@next/next/no-html-link-for-pages": [
-      "warn",
-      "./packages/front-end/pages"
+    "no-unused-expressions": [
+      "error",
+      {
+        "allowShortCircuit": true,
+        "enforceForJSX": true,
+        "allowTernary": true
+      }
     ],
+    "no-async-foreach/no-async-foreach": 2,
+    "@next/next/no-html-link-for-pages": ["warn", "./packages/front-end/pages"],
     "@next/next/no-img-element": "off",
     "@typescript-eslint/explicit-module-boundary-types": "off",
     "@typescript-eslint/explicit-function-return-type": "off",
@@ -74,19 +76,27 @@
         "argsIgnorePattern": "^_"
       }
     ],
-    "no-console": [
-      "warn"
-    ],
+    "no-console": ["warn"],
+    "no-restricted-imports": "off",
     "react/react-in-jsx-scope": "off",
     "react/prop-types": "off",
     "react-hooks/rules-of-hooks": "error",
     "react-hooks/exhaustive-deps": "warn",
-   "import/order": [
-     "error",
-     {
-       "groups": ["builtin", "external", "internal", "parent", "sibling", "index", "unknown"]
-     }
-   ]
+    "import/order": [
+      "error",
+      {
+        "groups": [
+          "builtin",
+          "external",
+          "internal",
+          "parent",
+          "sibling",
+          "index",
+          "unknown"
+        ]
+      }
+    ],
+    "@typescript-eslint/prefer-ts-expect-error": "error"
   },
   "overrides": [
     {
@@ -100,20 +110,55 @@
     },
     {
       "files": [
+        "./packages/back-end/src/**/*.ts*",
+        "./packages/back-end/types/**/*.ts*",
+        "./packages/front-end/**/*.ts*"
+      ],
+      "rules": {
+        "no-restricted-imports": ["error", { "patterns": ["..*"] }]
+      }
+    },
+    {
+      "files": ["./packages/front-end/**/*.ts*"],
+      "excludedFiles": ["./packages/front-end/components/Radix/**/*.ts*"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "@radix-ui/themes",
+                "message": "Use the component from @/components/Radix/ instead.",
+                "importNames": [
+                  "Avatar",
+                  "Badge",
+                  "Button",
+                  "Callout",
+                  "Checkbox",
+                  "DataList",
+                  "DropdownMenu",
+                  "Link",
+                  "RadioCards",
+                  "RadioGroup",
+                  "Select",
+                  "Tabs"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": [
         "./packages/docs/pages/_app.tsx",
         "./packages/front-end/components/Auth/InAppHelp.tsx",
         "./packages/front-end/components/Dimensions/DimensionChooser.tsx",
-        "./packages/front-end/components/Experiment/BreakDownResults.tsx",
-        "./packages/front-end/components/Experiment/CompactResults.tsx",
-        "./packages/front-end/components/Experiment/DateResults.tsx",
         "./packages/front-end/components/Experiment/ImportExperimentModal.tsx",
         "./packages/front-end/components/Experiment/ManualSnapshotForm.tsx",
         "./packages/front-end/components/Experiment/NewExperimentForm.tsx",
-        "./packages/front-end/components/Experiment/Results.tsx",
-        "./packages/front-end/components/Experiment/ResultsDownloadButton.tsx",
         "./packages/front-end/components/Experiment/VisualEditorScriptMissing.tsx",
         "./packages/front-end/components/Features/CodeSnippetModal.tsx",
-        "./packages/front-end/components/Features/ConditionInput.tsx",
         "./packages/front-end/components/Features/DraftModal.tsx",
         "./packages/front-end/components/Features/RuleList.tsx",
         "./packages/front-end/components/Forms/SelectField.tsx",
@@ -124,12 +169,9 @@
         "./packages/front-end/components/Queries/RunQueriesButton.tsx",
         "./packages/front-end/components/Segments/PickSegmentModal.tsx",
         "./packages/front-end/components/Settings/UpgradeModal.tsx",
-        "./packages/front-end/components/Settings/VisualEditorInstructions.tsx",
         "./packages/front-end/components/Share/ShareModal.tsx",
         "./packages/front-end/components/Tabs/ControlledTabs.tsx",
         "./packages/front-end/components/TempMessage.tsx",
-        "./packages/front-end/hooks/useStripeSubscription.ts",
-        "./packages/front-end/pages/experiments/designer/*.tsx",
         "./packages/front-end/pages/experiments/index.tsx",
         "./packages/front-end/pages/idea/*iid*.tsx",
         "./packages/front-end/pages/index.tsx",

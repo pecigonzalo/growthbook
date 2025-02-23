@@ -8,7 +8,7 @@ import LoadingOverlay from "@/components/LoadingOverlay";
 import useSwitchOrg from "@/services/useSwitchOrg";
 import { Props as PresentationProps } from "./Presentation";
 const DynamicPresentation = dynamic<PresentationProps>(
-  () => import("../../components/Share/Presentation"),
+  () => import("@/components/Share/Presentation"),
   {
     ssr: false,
     //loading: () => (<p>Loading...</p>) // this causes a lint error
@@ -43,7 +43,7 @@ const Preview: FC<{
     }[];
   }>(`/presentation/preview/?expIds=${expIds}`);
 
-  useSwitchOrg(pdata?.presentation?.organization);
+  useSwitchOrg(pdata?.presentation?.organization || null);
 
   if (error) {
     return (

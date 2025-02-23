@@ -5,9 +5,9 @@ import {
   VercelEnvVar,
   VercelProject,
   VercelTarget,
-} from "../../types/vercel";
-import { createApiKey } from "../models/ApiKeyModel";
-import { logger } from "../util/logger";
+} from "back-end/types/vercel";
+import { createLegacySdkKey } from "back-end/src/models/ApiKeyModel";
+import { logger } from "back-end/src/util/logger";
 
 interface VercelApiCallProps {
   token: string;
@@ -37,7 +37,7 @@ async function vercelApiCall<T = unknown>({
   });
 
   const json: T | { error: string } = await res.json();
-  if ("error" in json) {
+  if (json && typeof json === "object" && "error" in json) {
     logger.error(json.error);
     throw new Error(json.error);
   }
@@ -65,15 +65,15 @@ export async function createOrgGbKeys(
 ) {
   const orgGbKeys = [];
   for (const envMapEntry of gbVercelEnvMap) {
-    const createdKeyVal = await createApiKey({
-      organization: orgId,
-      secret: false,
-      environment: envMapEntry.gb,
-      project: "",
-      encryptSDK: false,
+    const createdKeyVal = await createLegacySdkKey({
+      organizationId: orgId,
       description:
         "This key is used by Vercel that allows you to connect your GrowthBook sdk to the GrowthBook API.",
+      project: "",
+      encryptSDK: false,
+      environment: envMapEntry.gb,
     });
+
     orgGbKeys.push({
       key: "GROWTHBOOK_KEY",
       value: createdKeyVal.key,

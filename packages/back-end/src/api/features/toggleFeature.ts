@@ -1,52 +1,41 @@
-import { z } from "zod";
-import { ApiFeatureInterface } from "../../../types/api";
+import { getRevision } from "back-end/src/models/FeatureRevisionModel";
+import { ToggleFeatureResponse } from "back-end/types/openapi";
+import { getExperimentMapForFeature } from "back-end/src/models/ExperimentModel";
 import {
   getFeature,
   toggleMultipleEnvironments,
-} from "../../models/FeatureModel";
-import { auditDetailsUpdate } from "../../services/audit";
-import { getApiFeatureObj, getSavedGroupMap } from "../../services/features";
-import { getEnvironments } from "../../services/organizations";
-import { createApiRequestHandler } from "../../util/handler";
+} from "back-end/src/models/FeatureModel";
+import { auditDetailsUpdate } from "back-end/src/services/audit";
+import {
+  getApiFeatureObj,
+  getSavedGroupMap,
+} from "back-end/src/services/features";
+import { getEnvironmentIdsFromOrg } from "back-end/src/services/organizations";
+import { createApiRequestHandler } from "back-end/src/util/handler";
+import { toggleFeatureValidator } from "back-end/src/validators/openapi";
 
-export const toggleFeature = createApiRequestHandler({
-  paramsSchema: z
-    .object({
-      key: z.string(),
-    })
-    .strict(),
-  bodySchema: z
-    .object({
-      environments: z.record(
-        z.string(),
-        z.union([
-          z.boolean(),
-          z.literal("true"),
-          z.literal("false"),
-          z.literal("1"),
-          z.literal("0"),
-          z.literal(""),
-          z.literal(0),
-          z.literal(1),
-        ])
-      ),
-      reason: z.string().optional(),
-    })
-    .strict(),
-})(
-  async (req): Promise<{ feature: ApiFeatureInterface }> => {
-    const feature = await getFeature(req.organization.id, req.params.key);
+export const toggleFeature = createApiRequestHandler(toggleFeatureValidator)(
+  async (req): Promise<ToggleFeatureResponse> => {
+    const feature = await getFeature(req.context, req.params.id);
     if (!feature) {
       throw new Error("Could not find a feature with that key");
     }
 
-    const environmentIds = new Set(
-      getEnvironments(req.organization).map((e) => e.id)
-    );
+    const environmentIds = getEnvironmentIdsFromOrg(req.organization);
+
+    if (
+      !req.context.permissions.canUpdateFeature(feature, {}) ||
+      !req.context.permissions.canPublishFeature(
+        feature,
+        Object.keys(req.body.environments)
+      )
+    ) {
+      req.context.permissions.throwPermissionError();
+    }
 
     const toggles: Record<string, boolean> = {};
     Object.keys(req.body.environments).forEach((env) => {
-      if (!environmentIds.has(env)) {
+      if (!environmentIds.includes(env)) {
         throw new Error(`Unknown environment: '${env}'`);
       }
 
@@ -55,7 +44,7 @@ export const toggleFeature = createApiRequestHandler({
     });
 
     const updatedFeature = await toggleMultipleEnvironments(
-      req.organization,
+      req.context,
       feature,
       toggles
     );
@@ -73,8 +62,24 @@ export const toggleFeature = createApiRequestHandler({
     }
 
     const groupMap = await getSavedGroupMap(req.organization);
+    const experimentMap = await getExperimentMapForFeature(
+      req.context,
+      updatedFeature.id
+    );
+    const revision = await getRevision({
+      context: req.context,
+      organization: updatedFeature.organization,
+      featureId: updatedFeature.id,
+      version: updatedFeature.version,
+    });
     return {
-      feature: getApiFeatureObj(updatedFeature, req.organization, groupMap),
+      feature: getApiFeatureObj({
+        feature: updatedFeature,
+        organization: req.organization,
+        groupMap,
+        experimentMap,
+        revision,
+      }),
     };
   }
 );

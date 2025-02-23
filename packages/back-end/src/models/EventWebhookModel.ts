@@ -3,13 +3,22 @@ import z from "zod";
 import omit from "lodash/omit";
 import md5 from "md5";
 import mongoose from "mongoose";
+import intersection from "lodash/intersection";
 import {
   NotificationEventName,
-  notificationEventNames,
-} from "../events/base-types";
-import { errorStringFromZodResult } from "../util/validation";
-import { EventWebHookInterface } from "../../types/event-webhook";
-import { logger } from "../util/logger";
+  zodNotificationEventNamesEnum,
+} from "back-end/src/events/base-types";
+import { errorStringFromZodResult } from "back-end/src/util/validation";
+import { EventWebHookInterface } from "back-end/types/event-webhook";
+import { logger } from "back-end/src/util/logger";
+import {
+  eventWebHookPayloadTypes,
+  EventWebHookPayloadType,
+  eventWebHookMethods,
+  EventWebHookMethod,
+} from "back-end/src/validators/event-webhook";
+import { ReqContext } from "back-end/types/organization";
+import { createEvent } from "./EventModel";
 
 const eventWebHookSchema = new mongoose.Schema({
   id: {
@@ -24,6 +33,71 @@ const eventWebHookSchema = new mongoose.Schema({
   name: {
     type: String,
     required: true,
+  },
+  headers: {
+    type: Map,
+    of: String,
+    required: false,
+  },
+  method: {
+    type: String,
+    required: false,
+    validate: {
+      validator(value: unknown) {
+        const zodSchema = z.enum(eventWebHookMethods);
+
+        const result = zodSchema.safeParse(value);
+
+        if (!result.success) {
+          const errorString = errorStringFromZodResult(result);
+          logger.error(
+            {
+              error: JSON.stringify(errorString, null, 2),
+              result: JSON.stringify(result, null, 2),
+            },
+            "Invalid Method"
+          );
+        }
+
+        return result.success;
+      },
+    },
+  },
+  payloadType: {
+    type: String,
+    required: false,
+    validate: {
+      validator(value: unknown) {
+        const zodSchema = z.enum(eventWebHookPayloadTypes);
+
+        const result = zodSchema.safeParse(value);
+
+        if (!result.success) {
+          const errorString = errorStringFromZodResult(result);
+          logger.error(
+            {
+              error: JSON.stringify(errorString, null, 2),
+              result: JSON.stringify(result, null, 2),
+            },
+            "Invalid Payload Type"
+          );
+        }
+
+        return result.success;
+      },
+    },
+  },
+  projects: {
+    type: [String],
+    required: false,
+  },
+  tags: {
+    type: [String],
+    required: false,
+  },
+  environments: {
+    type: [String],
+    required: false,
   },
   dateCreated: {
     type: Date,
@@ -42,13 +116,19 @@ const eventWebHookSchema = new mongoose.Schema({
     required: true,
     validate: {
       validator(value: unknown) {
-        const zodSchema = z.array(z.enum(notificationEventNames)).min(1);
+        const zodSchema = z.array(z.enum(zodNotificationEventNamesEnum)).min(1);
 
         const result = zodSchema.safeParse(value);
 
         if (!result.success) {
           const errorString = errorStringFromZodResult(result);
-          logger.error(errorString, "Invalid Event name");
+          logger.error(
+            {
+              error: JSON.stringify(errorString, null, 2),
+              result: JSON.stringify(result, null, 2),
+            },
+            "Invalid Event name"
+          );
         }
 
         return result.success;
@@ -87,10 +167,42 @@ type EventWebHookDocument = mongoose.Document & EventWebHookInterface;
  * @param doc
  * @returns
  */
-const toInterface = (doc: EventWebHookDocument): EventWebHookInterface =>
-  omit(doc.toJSON(), ["__v", "_id"]) as EventWebHookInterface;
+const toInterface = (doc: EventWebHookDocument): EventWebHookInterface => {
+  const payload = omit(doc.toJSON<EventWebHookDocument>(), ["__v", "_id"]);
 
-const EventWebHookModel = mongoose.model<EventWebHookDocument>(
+  // Add defaults values
+  const defaults = {
+    ...(payload.method ? {} : { method: "POST" }),
+    // All webhook are created with a payloadType. This is here for antiquated ones
+    // which don't have one and should be considered raw.
+    ...(payload.payloadType ? {} : { payloadType: "raw" }),
+    ...(payload.headers ? {} : { headers: {} }),
+    ...(payload.tags ? {} : { tags: [] }),
+    ...(payload.projects ? {} : { projects: [] }),
+    ...(payload.environments ? {} : { environments: [] }),
+  };
+
+  if (Object.keys(defaults).length)
+    void (async () => {
+      try {
+        EventWebHookModel.updateOne(
+          { id: doc.id },
+          {
+            $set: defaults,
+          }
+        );
+      } catch (_) {
+        return;
+      }
+    })();
+
+  return {
+    ...defaults,
+    ...payload,
+  };
+};
+
+export const EventWebHookModel = mongoose.model<EventWebHookInterface>(
   "EventWebHook",
   eventWebHookSchema
 );
@@ -101,6 +213,12 @@ type CreateEventWebHookOptions = {
   organizationId: string;
   enabled: boolean;
   events: NotificationEventName[];
+  projects: string[];
+  tags: string[];
+  environments: string[];
+  payloadType: EventWebHookPayloadType;
+  method: EventWebHookMethod;
+  headers: Record<string, string>;
 };
 
 /**
@@ -114,6 +232,12 @@ export const createEventWebHook = async ({
   organizationId,
   enabled,
   events,
+  projects,
+  tags,
+  environments,
+  payloadType,
+  method,
+  headers,
 }: CreateEventWebHookOptions): Promise<EventWebHookInterface> => {
   const now = new Date();
   const signingKey = "ewhk_" + md5(randomUUID()).substr(0, 32);
@@ -128,6 +252,12 @@ export const createEventWebHook = async ({
     events,
     url,
     signingKey,
+    projects,
+    tags,
+    environments,
+    payloadType,
+    method,
+    headers,
     lastRunAt: null,
     lastState: "none",
     lastResponseBody: null,
@@ -177,10 +307,31 @@ export const deleteEventWebHookById = async ({
   return result.deletedCount === 1;
 };
 
-type UpdateEventWebHookAttributes = {
+/**
+ * Given an EventWebHook.organizationId will delete the all corresponding document
+ * @param organizationId organization ID
+ */
+export const deleteOrganizationventWebHook = async (
+  organizationId: string
+): Promise<boolean> => {
+  const result = await EventWebHookModel.deleteMany({
+    organizationId,
+  });
+
+  return result.deletedCount > 0;
+};
+
+export type UpdateEventWebHookAttributes = {
   name?: string;
   url?: string;
+  enabled?: boolean;
   events?: NotificationEventName[];
+  tags?: string[];
+  environments?: string[];
+  projects?: string[];
+  payloadType?: EventWebHookPayloadType;
+  method?: EventWebHookMethod;
+  headers?: Record<string, string>;
 };
 
 /**
@@ -206,7 +357,7 @@ export const updateEventWebHook = async (
     }
   );
 
-  return result.nModified === 1;
+  return result.modifiedCount === 1;
 };
 
 type EventWebHookStatusUpdate =
@@ -252,22 +403,67 @@ export const getAllEventWebHooks = async (
   return docs.map(toInterface);
 };
 
+const filterOptional = <T>(want: T[] = [], has: T[]) => {
+  if (!want.length) return true;
+  return !!intersection(want, has).length;
+};
+
 /**
  * Retrieve all event web hooks for an organization for a given event
  * @param organizationId
  * @param eventName
  * @param enabled
  */
-export const getAllEventWebHooksForEvent = async (
-  organizationId: string,
-  eventName: NotificationEventName,
-  enabled: boolean
-): Promise<EventWebHookInterface[]> => {
-  const docs = await EventWebHookModel.find({
+export const getAllEventWebHooksForEvent = async ({
+  organizationId,
+  eventName,
+  enabled,
+  tags,
+  projects,
+}: {
+  organizationId: string;
+  eventName: NotificationEventName;
+  enabled: boolean;
+  tags: string[];
+  projects: string[];
+}): Promise<EventWebHookInterface[]> => {
+  const allDocs = await EventWebHookModel.find({
     organizationId,
     events: eventName,
     enabled,
   });
 
+  const docs = allDocs.filter((doc) => {
+    if (!filterOptional(doc.tags, tags)) return false;
+    if (!filterOptional(doc.projects, projects)) return false;
+
+    return true;
+  });
+
   return docs.map(toInterface);
+};
+
+export const sendEventWebhookTestEvent = async (
+  context: ReqContext,
+  webhookId: string
+) => {
+  if (!context.permissions.canCreateEventWebhook()) {
+    context.permissions.throwPermissionError();
+  }
+
+  const webhook = await getEventWebHookById(webhookId, context.org.id);
+
+  if (!webhook) throw new Error(`Cannot find webhook with id ${webhookId}`);
+
+  await createEvent({
+    context,
+    object: "webhook",
+    objectId: webhook.id,
+    event: "test",
+    data: { object: { webhookId: webhook.id } },
+    containsSecrets: false,
+    projects: [],
+    tags: [],
+    environments: [],
+  });
 };

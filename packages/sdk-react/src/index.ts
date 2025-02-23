@@ -3,6 +3,9 @@ export {
   setPolyfills,
   configureCache,
   clearCache,
+  getPolyfills,
+  helpers,
+  prefetchPayload,
 } from "@growthbook/growthbook";
 
 export type {
@@ -19,6 +22,47 @@ export type {
   FeatureRule,
   JSONValue,
   SubscriptionFunction,
+  Filter,
+  VariationMeta,
+  VariationRange,
+  ApplyDomChangesCallback,
+  AutoExperiment,
+  AutoExperimentChangeType,
+  AutoExperimentVariation,
+  CacheSettings,
+  DOMMutation,
+  FeatureApiResponse,
+  FeatureDefinitions,
+  Helpers,
+  InitOptions,
+  InitResponse,
+  LoadFeaturesOptions,
+  LocalStorageCompat,
+  NavigateCallback,
+  ParentConditionInterface,
+  Polyfills,
+  PrefetchOptions,
+  RefreshFeaturesOptions,
+  RenderFunction,
+  StickyAssignments,
+  StickyAssignmentsDocument,
+  StickyAttributeKey,
+  StickyExperimentKey,
+  TrackingCallback,
+  TrackingData,
+  UrlTarget,
+  UrlTargetType,
+  WidenPrimitives,
+  GrowthBookPayload,
+  InitSyncOptions,
+} from "@growthbook/growthbook";
+
+export {
+  StickyBucketService,
+  LocalStorageStickyBucketService,
+  BrowserCookieStickyBucketService,
+  ExpressCookieStickyBucketService,
+  RedisStickyBucketService,
 } from "@growthbook/growthbook";
 
 export type {

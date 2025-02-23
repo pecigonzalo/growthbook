@@ -1,61 +1,30 @@
-import Link from "next/link";
-import { FC, useEffect, useState } from "react";
-import { FaAngleLeft } from "react-icons/fa";
-import { useRouter } from "next/router";
-import InviteList from "@/components/Settings/Team/InviteList";
-import MemberList from "@/components/Settings/Team/MemberList";
-import { useAuth } from "@/services/auth";
-import SSOSettings from "@/components/Settings/SSOSettings";
-import { useUser } from "@/services/UserContext";
-import usePermissions from "@/hooks/usePermissions";
-import { useDefinitions } from "@/services/DefinitionsContext";
-import SelectField from "@/components/Forms/SelectField";
-import OrphanedUsersList from "@/components/Settings/Team/OrphanedUsersList";
-import PendingMemberList from "@/components/Settings/Team/PendingMemberList";
-import { isCloud } from "@/services/env";
-import AutoApproveMembersToggle from "@/components/Settings/Team/AutoApproveMembersToggle";
+import { FC, useState } from "react";
+import { Box } from "@radix-ui/themes";
+import TeamsList from "@/components/Settings/Teams/TeamsList";
+import TeamModal from "@/components/Teams/TeamModal";
+import { Team, useUser } from "@/services/UserContext";
+import {
+  Tabs,
+  TabsList,
+  TabsTrigger,
+  TabsContent,
+} from "@/components/Radix/Tabs";
+import PremiumTooltip from "@/components/Marketing/PremiumTooltip";
+import { MembersTabView } from "@/components/Settings/Team/MembersTabView";
+import RoleList from "@/components/Teams/Roles/RoleList";
+import usePermissionsUtil from "@/hooks/usePermissionsUtils";
+import Button from "@/components/Radix/Button";
+import LinkButton from "@/components/Radix/LinkButton";
+import PremiumEmptyState from "@/components/PremiumEmptyState";
 
 const TeamPage: FC = () => {
-  const { refreshOrganization, enterpriseSSO, organization } = useUser();
+  const { refreshOrganization, hasCommercialFeature } = useUser();
+  const permissionsUtil = usePermissionsUtil();
+  const [modalOpen, setModalOpen] = useState<Partial<Team> | null>(null);
+  const hasTeamsFeature = hasCommercialFeature("teams");
+  const hasCustomRolesFeature = hasCommercialFeature("custom-roles");
 
-  const { project, projects } = useDefinitions();
-
-  const [currentProject, setCurrentProject] = useState(project || "");
-
-  const permissions = usePermissions();
-
-  const router = useRouter();
-  const { apiCall } = useAuth();
-
-  // Will be set when redirected here after Stripe Checkout
-  const checkoutSessionId = String(
-    router.query["subscription-success-session"] || ""
-  );
-
-  const [justSubscribed, setJustSubscribed] = useState(false);
-  useEffect(() => {
-    if (!checkoutSessionId) return;
-    setJustSubscribed(true);
-
-    // Ensure database has the subscription (in case the Stripe webhook failed)
-    apiCall(`/subscription/success`, {
-      method: "POST",
-      body: JSON.stringify({
-        checkoutSessionId,
-      }),
-    })
-      .then(() => {
-        refreshOrganization();
-        router.replace(router.pathname, router.pathname, { shallow: true });
-      })
-      .catch((e) => {
-        console.error(e);
-      });
-  }, [checkoutSessionId]);
-
-  const ssoConnection = enterpriseSSO;
-
-  if (!permissions.manageTeam) {
+  if (!permissionsUtil.canManageTeam()) {
     return (
       <div className="container pagecontents">
         <div className="alert alert-danger">
@@ -67,58 +36,105 @@ const TeamPage: FC = () => {
 
   return (
     <div className="container-fluid pagecontents">
-      <div className="mb-2">
-        <Link href="/settings">
-          <a>
-            <FaAngleLeft /> All Settings
-          </a>
-        </Link>
-      </div>
-      {justSubscribed && (
-        <div className="alert alert-success mb-4">
-          <h3>Welcome to GrowthBook Pro!</h3>
-          <div>You can now invite more team members to your account.</div>
-        </div>
-      )}
-      <SSOSettings ssoConnection={ssoConnection} />
-      <h1>Team Members</h1>
-      {projects.length > 0 && (
-        <div className="row align-items-center">
-          <div className="col-auto">View roles and permissions for</div>
-          <div className="col-auto">
-            <SelectField
-              value={currentProject}
-              onChange={(value) => setCurrentProject(value)}
-              options={projects.map((p) => ({
-                label: p.name,
-                value: p.id,
-              }))}
-              initialOption="All Projects"
-            />
-          </div>
-        </div>
-      )}
-      {isCloud() && <AutoApproveMembersToggle mutate={refreshOrganization} />}
-      <MemberList mutate={refreshOrganization} project={currentProject} />
-      {organization?.pendingMembers?.length > 0 && (
-        <PendingMemberList
-          pendingMembers={organization.pendingMembers}
-          mutate={refreshOrganization}
-          project={currentProject}
-        />
-      )}
-      {organization.invites.length > 0 && (
-        <InviteList
-          invites={organization.invites}
-          mutate={refreshOrganization}
-          project={currentProject}
-        />
-      )}
+      <Tabs defaultValue="members">
+        <Box mb="5">
+          <TabsList>
+            <TabsTrigger value="members">Members</TabsTrigger>
+            <TabsTrigger value="teams">Teams</TabsTrigger>
+            <TabsTrigger value="roles">Roles</TabsTrigger>
+          </TabsList>
+        </Box>
 
-      <OrphanedUsersList
-        mutateUsers={refreshOrganization}
-        numUsersInAccount={organization.members?.length || 0}
-      />
+        <TabsContent value="members">
+          <MembersTabView />
+        </TabsContent>
+
+        <TabsContent value="teams">
+          <>
+            {modalOpen && (
+              <TeamModal
+                existing={modalOpen}
+                close={() => setModalOpen(null)}
+                onSuccess={() => refreshOrganization()}
+              />
+            )}
+            <div className="filters md-form row mb-1 align-items-center">
+              <div className="col-auto d-flex align-items-end">
+                <div>
+                  <h1>
+                    <PremiumTooltip commercialFeature="teams">
+                      Teams
+                    </PremiumTooltip>
+                  </h1>
+                  <div className="text-muted mb-2">
+                    Place organization members into teams to grant permissions
+                    by group.
+                  </div>
+                </div>
+              </div>
+              <div style={{ flex: 1 }} />
+              <div className="col-auto">
+                <Button
+                  disabled={!hasTeamsFeature}
+                  onClick={() => setModalOpen({})}
+                >
+                  Create Team
+                </Button>
+              </div>
+            </div>
+            {hasTeamsFeature ? (
+              <TeamsList />
+            ) : (
+              <PremiumEmptyState
+                title="Teams"
+                description="Create groups of GrowthBook users to organize and manage permissions centrally"
+                commercialFeature="teams"
+                reason="Teams no access"
+                learnMoreLink="https://docs.growthbook.io/account/user-permissions#teams"
+              />
+            )}
+          </>
+        </TabsContent>
+
+        <TabsContent value="roles">
+          <>
+            <div className="filters md-form row mb-1 align-items-center">
+              <div className="col-auto d-flex align-items-end">
+                <div>
+                  <h1>
+                    <PremiumTooltip commercialFeature="custom-roles">
+                      Roles
+                    </PremiumTooltip>
+                  </h1>
+                  <div className="text-muted mb-2">
+                    Create and update roles to customize permissions for your
+                    organization&apos;s users and teams.
+                  </div>
+                </div>
+              </div>
+              <div style={{ flex: 1 }} />
+              <div className="col-auto">
+                {hasCustomRolesFeature ? (
+                  <LinkButton href="/settings/role/new">
+                    Create Custom Role
+                  </LinkButton>
+                ) : null}
+              </div>
+            </div>
+            {hasCustomRolesFeature ? (
+              <RoleList />
+            ) : (
+              <PremiumEmptyState
+                title="Custom Roles"
+                description="Custom roles allows you to adjust permissions and assign those roles to members or teams"
+                commercialFeature="custom-roles"
+                reason="Custom Roles no access"
+                learnMoreLink="https://docs.growthbook.io/account/user-permissions#custom-roles"
+              />
+            )}
+          </>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 };

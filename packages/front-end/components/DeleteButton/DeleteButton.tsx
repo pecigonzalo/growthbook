@@ -1,10 +1,18 @@
-import { FC, useState, useEffect, CSSProperties } from "react";
-import { FaTrash } from "react-icons/fa";
+import {
+  FC,
+  useState,
+  useEffect,
+  CSSProperties,
+  ReactElement,
+  isValidElement,
+} from "react";
 import clsx from "clsx";
-import Modal from "../Modal";
+import { PiTrashFill } from "react-icons/pi";
+import Modal from "@/components/Modal";
+import Button from "@/components/Radix/Button";
 
 const DeleteButton: FC<{
-  onClick: () => Promise<void>;
+  onClick: () => void | Promise<void>;
   className?: string;
   iconClassName?: string;
   style?: CSSProperties;
@@ -14,10 +22,13 @@ const DeleteButton: FC<{
   text?: string;
   title?: string;
   useIcon?: boolean;
-  deleteMessage?: string;
-  additionalMessage?: string;
-  getConfirmationContent?: () => Promise<string | React.ReactElement>;
+  useRadix?: boolean;
+  deleteMessage?: ReactElement | null | string;
+  additionalMessage?: ReactElement | null | string;
+  getConfirmationContent?: () => Promise<string | ReactElement | null>;
   canDelete?: boolean;
+  disabled?: boolean;
+  stopPropagation?: boolean;
 }> = ({
   onClick,
   className,
@@ -29,14 +40,17 @@ const DeleteButton: FC<{
   text = "",
   title = "",
   useIcon = true,
+  useRadix = false,
   deleteMessage = "Are you sure? This action cannot be undone.",
   additionalMessage = "",
   getConfirmationContent,
   canDelete = true,
+  disabled = false,
+  stopPropagation = false,
 }) => {
   const [confirming, setConfirming] = useState(false);
   const [dynamicContent, setDynamicContent] = useState<
-    string | React.ReactElement
+    string | ReactElement | null
   >("");
 
   useEffect(() => {
@@ -50,6 +64,7 @@ const DeleteButton: FC<{
     <>
       {confirming ? (
         <Modal
+          trackingEventModalType=""
           header={`Delete ${displayName}`}
           close={() => setConfirming(false)}
           open={true}
@@ -57,31 +72,55 @@ const DeleteButton: FC<{
           submitColor="danger"
           submit={onClick}
           ctaEnabled={canDelete}
+          increasedElevation={true}
         >
-          {dynamicContent ? dynamicContent : <p>{deleteMessage}</p>}
-          {additionalMessage && <p>{additionalMessage}</p>}
+          {dynamicContent ? (
+            dynamicContent
+          ) : isValidElement(deleteMessage) ? (
+            deleteMessage
+          ) : (
+            <p>{deleteMessage}</p>
+          )}
+          {additionalMessage &&
+            (isValidElement(additionalMessage) ? (
+              additionalMessage
+            ) : (
+              <p>{additionalMessage}</p>
+            ))}
         </Modal>
       ) : (
         ""
       )}
-      <a
-        className={clsx(
-          link
-            ? "text-danger"
-            : ["btn", outline ? "btn-outline-danger" : "btn-danger"],
-          className
-        )}
-        title={title}
-        href="#"
-        style={style}
-        onClick={(e) => {
-          e.preventDefault();
-          setConfirming(true);
-        }}
-      >
-        {useIcon && <FaTrash className={iconClassName} />}
-        {text && ` ${text}`}
-      </a>
+      {useRadix ? (
+        <Button
+          onClick={() => !disabled && setConfirming(true)}
+          variant="ghost"
+          color="red"
+          title={title}
+          stopPropagation={stopPropagation}
+        >
+          {text}
+        </Button>
+      ) : (
+        <a
+          className={clsx(
+            link
+              ? "text-danger"
+              : ["btn", outline ? "btn-outline-danger" : "btn-danger"],
+            className
+          )}
+          title={title}
+          href="#"
+          style={style}
+          onClick={(e) => {
+            e.preventDefault();
+            !disabled && setConfirming(true);
+          }}
+        >
+          {useIcon && <PiTrashFill className={iconClassName} />}
+          {text && ` ${text}`}
+        </a>
+      )}
     </>
   );
 };

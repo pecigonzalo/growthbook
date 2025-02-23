@@ -1,34 +1,42 @@
 import { useState } from "react";
+import { FaCheckCircle, FaExclamationTriangle } from "react-icons/fa";
 import { redirectWithTimeout, useAuth } from "@/services/auth";
-import useStripeSubscription from "@/hooks/useStripeSubscription";
-import LoadingOverlay from "../LoadingOverlay";
-import Tooltip from "../Tooltip/Tooltip";
-import Button from "../Button";
+import Button from "@/components/Button";
+import { isCloud } from "@/services/env";
+import { useUser } from "@/services/UserContext";
 import UpgradeModal from "./UpgradeModal";
-
-const currencyFormatter = new Intl.NumberFormat(undefined, {
-  style: "currency",
-  currency: "USD",
-});
 
 export default function SubscriptionInfo() {
   const { apiCall } = useAuth();
   const {
-    planName,
-    nextBillDate,
-    dateToBeCanceled,
-    cancelationDate,
-    subscriptionStatus,
-    pendingCancelation,
-    quote,
-    loading,
+    subscription,
+    seatsInUse,
     canSubscribe,
-    activeAndInvitedUsers,
-  } = useStripeSubscription();
+    organization,
+    license,
+  } = useUser();
 
   const [upgradeModal, setUpgradeModal] = useState(false);
 
-  if (loading) return <LoadingOverlay />;
+  //TODO: Remove this once we have moved the license off the organization
+  const stripeSubscription =
+    license?.stripeSubscription || organization?.subscription;
+
+  const nextBillDate = new Date(
+    (stripeSubscription?.current_period_end || 0) * 1000
+  ).toDateString();
+
+  const dateToBeCanceled = new Date(
+    (stripeSubscription?.cancel_at || 0) * 1000
+  ).toDateString();
+
+  const cancelationDate = new Date(
+    (stripeSubscription?.canceled_at || 0) * 1000
+  ).toDateString();
+
+  const pendingCancelation =
+    stripeSubscription?.status !== "canceled" &&
+    stripeSubscription?.cancel_at_period_end;
 
   return (
     <>
@@ -40,25 +48,57 @@ export default function SubscriptionInfo() {
         />
       )}
       <div className="col-auto mb-3">
-        <strong>Current Plan:</strong> {planName}
+        <strong>Current Plan:</strong> {isCloud() ? "Cloud" : "Self-Hosted"} Pro
+        {subscription?.status === "trialing" && (
+          <>
+            {" "}
+            <em>(trial)</em>
+          </>
+        )}
       </div>
       <div className="col-md-12 mb-3">
-        <strong>Number Of Seats:</strong> {quote?.activeAndInvitedUsers || 0}
+        <strong>Number Of Seats:</strong> {seatsInUse || 0}
       </div>
-      {quote && (
+      {subscription?.status !== "canceled" && !pendingCancelation && (
         <div className="col-md-12 mb-3">
-          <strong>Current Monthly Price:</strong>{" "}
-          {` ${currencyFormatter.format(quote.total || 0)}/month`}{" "}
-          <Tooltip
-            body="Click the Manage Subscription button below to see how this is calculated."
-            tipMinWidth="200px"
-          />
-        </div>
-      )}
-      {subscriptionStatus !== "canceled" && !pendingCancelation && (
-        <div className="col-md-12 mb-3">
-          <strong>Next Bill Date: </strong>
-          {nextBillDate}
+          <div>
+            <strong>Next Bill Date: </strong>
+            {nextBillDate}
+          </div>
+          {subscription?.hasPaymentMethod === true ? (
+            <div
+              className="mt-3 px-3 py-2 alert alert-success row"
+              style={{ maxWidth: 650 }}
+            >
+              <div className="col-auto px-1">
+                <FaCheckCircle />
+              </div>
+              <div className="col">
+                You have a valid payment method on file. You will be billed
+                automatically on this date.
+              </div>
+            </div>
+          ) : subscription?.hasPaymentMethod === false ? (
+            <div
+              className="mt-3 px-3 py-2 alert alert-warning row"
+              style={{ maxWidth: 550 }}
+            >
+              <div className="col-auto px-1">
+                <FaExclamationTriangle />
+              </div>
+              <div className="col">
+                <p>
+                  You do not have a valid payment method on file. Your
+                  subscription will be cancelled on this date unless you add a
+                  valid payment method.
+                </p>
+                <p className="mb-0">
+                  Click <strong>View Plan Details</strong> below to add a
+                  payment method.
+                </p>
+              </div>
+            </div>
+          ) : null}
         </div>
       )}
       {pendingCancelation && dateToBeCanceled && (
@@ -68,12 +108,12 @@ export default function SubscriptionInfo() {
           {` ${dateToBeCanceled}.`}
         </div>
       )}
-      {subscriptionStatus === "canceled" && (
+      {subscription?.status === "canceled" && (
         <div className="col-md-12 mb-3 alert alert-danger">
           Your plan was canceled on {` ${cancelationDate}.`}
         </div>
       )}
-      <div className="col-md-12 mb-3 d-flex flex-row">
+      <div className="col-md-12 mt-4 mb-3 d-flex flex-row px-0">
         <div className="col-auto">
           <Button
             color="primary"
@@ -91,12 +131,12 @@ export default function SubscriptionInfo() {
               }
             }}
           >
-            {subscriptionStatus !== "canceled"
-              ? "Manage Subscription"
+            {subscription?.status !== "canceled"
+              ? "View Plan Details"
               : "View Previous Invoices"}
           </Button>
         </div>
-        {subscriptionStatus === "canceled" && canSubscribe && (
+        {subscription?.status === "canceled" && canSubscribe && (
           <div className="col-auto">
             <button
               className="btn btn-success"
@@ -110,18 +150,6 @@ export default function SubscriptionInfo() {
           </div>
         )}
       </div>
-      {quote.currentSeatsPaidFor !== activeAndInvitedUsers && (
-        <div className="col-md-12 mb-3 alert alert-warning">
-          {`You have recently ${
-            activeAndInvitedUsers - quote.currentSeatsPaidFor > 0
-              ? "added"
-              : "removed"
-          } ${Math.abs(
-            activeAndInvitedUsers - quote.currentSeatsPaidFor
-          )} seats. `}
-          These changes will be applied to your subscription soon.
-        </div>
-      )}
     </>
   );
 }

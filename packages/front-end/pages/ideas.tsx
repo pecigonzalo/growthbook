@@ -3,15 +3,17 @@ import Link from "next/link";
 import { IdeaInterface } from "back-end/types/idea";
 import { FaPlus, FaRegCheckSquare, FaRegSquare } from "react-icons/fa";
 import clsx from "clsx";
-import useApi from "../hooks/useApi";
-import LoadingOverlay from "../components/LoadingOverlay";
-import { date } from "../services/dates";
-import IdeaForm from "../components/Ideas/IdeaForm";
-import { useSearch } from "../services/search";
-import { useDefinitions } from "../services/DefinitionsContext";
-import { useUser } from "../services/UserContext";
-import SortedTags from "../components/Tags/SortedTags";
-import Field from "../components/Forms/Field";
+import { date } from "shared/dates";
+import useApi from "@/hooks/useApi";
+import LoadingOverlay from "@/components/LoadingOverlay";
+import IdeaForm from "@/components/Ideas/IdeaForm";
+import { useSearch } from "@/services/search";
+import { useDefinitions } from "@/services/DefinitionsContext";
+import { useUser } from "@/services/UserContext";
+import SortedTags from "@/components/Tags/SortedTags";
+import Field from "@/components/Forms/Field";
+import usePermissionsUtil from "@/hooks/usePermissionsUtils";
+import Button from "@/components/Radix/Button";
 
 const IdeasPage = (): React.ReactElement => {
   const [includeArchived, setIncludeArchived] = useState(false);
@@ -22,9 +24,10 @@ const IdeasPage = (): React.ReactElement => {
     ideas: IdeaInterface[];
   }>(`/ideas?project=${project || ""}`);
 
-  const [current, setCurrent] = useState<Partial<IdeaInterface>>(null);
+  const [current, setCurrent] = useState<Partial<IdeaInterface> | null>(null);
 
-  const { getUserDisplay, permissions } = useUser();
+  const { getUserDisplay } = useUser();
+  const permissionsUtil = usePermissionsUtil();
 
   const { items: displayedIdeas, searchInputProps } = useSearch({
     items: data?.ideas || [],
@@ -39,6 +42,9 @@ const IdeasPage = (): React.ReactElement => {
   if (!data) {
     return <LoadingOverlay />;
   }
+
+  const canCreateIdeas = permissionsUtil.canViewIdeaModal(project);
+
   if (!data.ideas.length) {
     return (
       <div className="container p-4">
@@ -56,16 +62,16 @@ const IdeasPage = (): React.ReactElement => {
           When you&apos;re ready to test an idea, easily convert it to a full
           blown Experiment.
         </p>
-        {permissions.check("createIdeas", project) && (
-          <button
-            className="btn btn-success btn-lg"
+        {canCreateIdeas ? (
+          <Button
+            mt="3"
             onClick={() => {
               setCurrent({});
             }}
           >
             <FaPlus /> Add your first Idea
-          </button>
-        )}
+          </Button>
+        ) : null}
         {current && (
           <IdeaForm
             mutate={mutate}
@@ -114,18 +120,17 @@ const IdeasPage = (): React.ReactElement => {
             </div>
           )}
           <div style={{ flex: 1 }} />
-          {permissions.check("createIdeas", project) && (
+          {canCreateIdeas ? (
             <div className="col-auto">
-              <button
-                className="btn btn-primary float-left"
+              <Button
                 onClick={() => {
                   setCurrent({});
                 }}
               >
                 New Idea
-              </button>
+              </Button>
             </div>
-          )}
+          ) : null}
         </div>
         <div className="row">
           {displayedIdeas
@@ -161,9 +166,7 @@ const IdeasPage = (): React.ReactElement => {
                             </div>
                           )}
                           <h5 className="card-title">
-                            <Link href={`/idea/${idea.id}`}>
-                              <a>{idea.text}</a>
-                            </Link>
+                            <Link href={`/idea/${idea.id}`}>{idea.text}</Link>
                           </h5>
                         </div>
                         <div style={{ flex: 1 }}></div>
@@ -171,7 +174,9 @@ const IdeasPage = (): React.ReactElement => {
                           <div className="date mb-1">
                             By{" "}
                             <strong className="mr-1">
-                              {getUserDisplay(idea.userId) || idea.userName}
+                              {idea.userId
+                                ? getUserDisplay(idea.userId)
+                                : idea.userName}
                             </strong>
                             on <strong>{date(idea.dateCreated)}</strong>
                           </div>

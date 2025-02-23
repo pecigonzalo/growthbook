@@ -1,6 +1,5 @@
-import { logger } from "../util/logger";
+import { logger } from "back-end/src/util/logger";
 import mongoInit from "./mongo";
-import licenseInit from "./license";
 import { queueInit } from "./queue";
 
 let initPromise: Promise<void>;
@@ -9,7 +8,6 @@ export async function init() {
     initPromise = (async () => {
       await mongoInit();
       await queueInit();
-      await licenseInit();
     })();
   }
   try {

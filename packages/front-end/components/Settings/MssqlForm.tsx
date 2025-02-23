@@ -1,7 +1,7 @@
 import { FC, ChangeEventHandler } from "react";
 import { MssqlConnectionParams } from "back-end/types/integrations/mssql";
-import Toggle from "../Forms/Toggle";
-import Tooltip from "../Tooltip/Tooltip";
+import Toggle from "@/components/Forms/Toggle";
+import Tooltip from "@/components/Tooltip/Tooltip";
 import HostWarning from "./HostWarning";
 
 const MssqlForm: FC<{
@@ -15,7 +15,7 @@ const MssqlForm: FC<{
   return (
     <>
       <HostWarning
-        host={params.server}
+        host={params.server ?? ""}
         setHost={(host) => {
           setParams({
             server: host,
@@ -79,6 +79,32 @@ const MssqlForm: FC<{
             placeholder={existing ? "(Keep existing)" : ""}
           />
         </div>
+        <div className="form-group col-md-12">
+          <label>Request Timeout</label>
+          <input
+            type="number"
+            className="form-control"
+            name="requestTimeout"
+            value={params.requestTimeout || ""}
+            onChange={onParamChange}
+            placeholder="(optional - in seconds. If empty, it will be disabled)"
+          />
+          <div className="form-text text-muted small">
+            The number of seconds before a request is considered failed. The
+            connection default is 15 seconds. Set to 0 to disable timeout.
+          </div>
+        </div>
+        <div className="form-group col-md-12">
+          <label>Default Schema</label>
+          <input
+            type="text"
+            className="form-control"
+            name="defaultSchema"
+            value={params.defaultSchema || ""}
+            onChange={onParamChange}
+            placeholder="(optional)"
+          />
+        </div>
       </div>
       <div className="row mt-2">
         <div className="col-md-12">
@@ -90,7 +116,7 @@ const MssqlForm: FC<{
             <Toggle
               id="trust-server-cert"
               label="Trust server certificate"
-              value={params.options.trustServerCertificate === true}
+              value={params.options?.trustServerCertificate === true}
               setValue={(value) => {
                 const opt = {
                   ...params.options,
@@ -109,7 +135,7 @@ const MssqlForm: FC<{
             <Toggle
               id="encryption"
               label="Enable encryption"
-              value={params.options.encrypt === true}
+              value={params.options?.encrypt === true}
               setValue={(value) => {
                 const opt = { ...params.options, encrypt: value };
                 setParams({

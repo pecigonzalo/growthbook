@@ -1,24 +1,69 @@
 import express from "express";
 import z from "zod";
-import { wrapController } from "../wrapController";
-import { validateRequestMiddleware } from "../utils/validateRequestMiddleware";
+import { wrapController } from "back-end/src/routers/wrapController";
+import { validateRequestMiddleware } from "back-end/src/routers/utils/validateRequestMiddleware";
 import * as rawSavedGroupController from "./saved-group.controller";
+import {
+  postSavedGroupBodyValidator,
+  putSavedGroupBodyValidator,
+} from "./saved-group.validators";
 
 const router = express.Router();
 
 const savedGroupController = wrapController(rawSavedGroupController);
 
+router.get(
+  "/:id",
+  validateRequestMiddleware({
+    params: z
+      .object({
+        id: z.string(),
+      })
+      .strict(),
+  }),
+  savedGroupController.getSavedGroup
+);
+
 router.post(
   "/",
   validateRequestMiddleware({
-    body: z.object({
-      groupName: z.string(),
-      owner: z.string(),
-      attributeKey: z.string(),
-      groupList: z.string(),
-    }),
+    body: postSavedGroupBodyValidator,
   }),
   savedGroupController.postSavedGroup
+);
+
+router.post(
+  "/:id/add-items",
+  validateRequestMiddleware({
+    params: z
+      .object({
+        id: z.string(),
+      })
+      .strict(),
+    body: z
+      .object({
+        items: z.array(z.string()),
+      })
+      .strict(),
+  }),
+  savedGroupController.postSavedGroupAddItems
+);
+
+router.post(
+  "/:id/remove-items",
+  validateRequestMiddleware({
+    params: z
+      .object({
+        id: z.string(),
+      })
+      .strict(),
+    body: z
+      .object({
+        items: z.array(z.string()),
+      })
+      .strict(),
+  }),
+  savedGroupController.postSavedGroupRemoveItems
 );
 
 router.put(
@@ -29,12 +74,7 @@ router.put(
         id: z.string(),
       })
       .strict(),
-    body: z.object({
-      groupName: z.string(),
-      owner: z.string(),
-      attributeKey: z.string(),
-      groupList: z.string(),
-    }),
+    body: putSavedGroupBodyValidator,
   }),
   savedGroupController.putSavedGroup
 );

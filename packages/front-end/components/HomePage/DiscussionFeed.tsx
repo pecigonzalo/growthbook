@@ -1,11 +1,11 @@
 import { FC } from "react";
 import { useRouter } from "next/router";
+import { date } from "shared/dates";
 import useApi from "@/hooks/useApi";
-import { date } from "@/services/dates";
 import { useUser } from "@/services/UserContext";
-import LoadingOverlay from "../LoadingOverlay";
-import Avatar from "../Avatar/Avatar";
-import Markdown from "../Markdown/Markdown";
+import LoadingOverlay from "@/components/LoadingOverlay";
+import Avatar from "@/components/Avatar/Avatar";
+import Markdown from "@/components/Markdown/Markdown";
 
 const DiscussionFeed: FC<{
   num?: number;
@@ -45,7 +45,12 @@ const DiscussionFeed: FC<{
 
           return (
             <li className="mb-3" key={i}>
-              <Avatar email={email} className="mr-2 float-left" size={24} />
+              <Avatar
+                email={email}
+                className="mr-2 float-left"
+                size={24}
+                name={name}
+              />
               <div
                 className="card cursor-pointer border-0"
                 onClick={(e) => {

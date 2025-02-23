@@ -1,7 +1,8 @@
 import mongoose from "mongoose";
 import uniqid from "uniqid";
 import { z } from "zod";
-import { ApiSDKConnectionInterface } from "../../types/api";
+import { isEqual, omit } from "lodash";
+import { ApiSdkConnection } from "back-end/types/openapi";
 import {
   CreateSDKConnectionParams,
   EditSDKConnectionParams,
@@ -9,16 +10,19 @@ import {
   ProxyTestResult,
   SDKConnectionInterface,
   SDKLanguage,
-} from "../../types/sdk-connection";
-import { queueSingleProxyUpdate } from "../jobs/proxyUpdate";
-import { cancellableFetch } from "../util/http.util";
+} from "back-end/types/sdk-connection";
+import { cancellableFetch } from "back-end/src/util/http.util";
 import {
   IS_CLOUD,
   PROXY_ENABLED,
   PROXY_HOST_INTERNAL,
   PROXY_HOST_PUBLIC,
-} from "../util/secrets";
-import { errorStringFromZodResult } from "../util/validation";
+} from "back-end/src/util/secrets";
+import { errorStringFromZodResult } from "back-end/src/util/validation";
+import { triggerSingleSDKWebhookJobs } from "back-end/src/jobs/updateAllJobs";
+import { ApiReqContext } from "back-end/types/api";
+import { ReqContext } from "back-end/types/organization";
+import { addCloudSDKMapping } from "back-end/src/services/clickhouse";
 import { generateEncryptionKey, generateSigningKey } from "./ApiKeyModel";
 
 const sdkConnectionSchema = new mongoose.Schema({
@@ -34,11 +38,21 @@ const sdkConnectionSchema = new mongoose.Schema({
   dateCreated: Date,
   dateUpdated: Date,
   languages: [String],
+  sdkVersion: String,
   environment: String,
   project: String,
+  projects: [String],
   encryptPayload: Boolean,
   encryptionKey: String,
+  hashSecureAttributes: Boolean,
+  includeVisualExperiments: Boolean,
+  includeDraftExperiments: Boolean,
+  includeExperimentNames: Boolean,
+  includeRedirectExperiments: Boolean,
+  includeRuleIds: Boolean,
   connected: Boolean,
+  remoteEvalEnabled: Boolean,
+  savedGroupReferencesEnabled: Boolean,
   key: {
     type: String,
     unique: true,
@@ -57,7 +71,7 @@ const sdkConnectionSchema = new mongoose.Schema({
 
 type SDKConnectionDocument = mongoose.Document & SDKConnectionInterface;
 
-const SDKConnectionModel = mongoose.model<SDKConnectionDocument>(
+const SDKConnectionModel = mongoose.model<SDKConnectionInterface>(
   "SdkConnection",
   sdkConnectionSchema
 );
@@ -74,21 +88,74 @@ function addEnvProxySettings(proxy: ProxyConnection): ProxyConnection {
 }
 
 function toInterface(doc: SDKConnectionDocument): SDKConnectionInterface {
-  const conn = doc.toJSON();
+  const conn = doc.toJSON<SDKConnectionDocument>();
   conn.proxy = addEnvProxySettings(conn.proxy);
-  return conn;
+
+  // Migrate old project setting to projects
+  if (
+    !conn.projects?.length &&
+    (conn as SDKConnectionDocument & { project?: string }).project
+  ) {
+    const project = (conn as SDKConnectionDocument & { project: string })
+      .project;
+    conn.projects = [project];
+    (conn as SDKConnectionDocument & { project?: string }).project = "";
+  }
+
+  return omit(conn, ["__v", "_id"]);
 }
 
-export async function findSDKConnectionById(id: string) {
+export async function findSDKConnectionById(
+  context: ReqContext | ApiReqContext,
+  id: string
+) {
   const doc = await SDKConnectionModel.findOne({
     id,
   });
-  return doc ? toInterface(doc) : null;
+
+  if (!doc) return null;
+
+  const connection = toInterface(doc);
+  return context.permissions.canReadMultiProjectResource(connection.projects)
+    ? connection
+    : null;
 }
 
-export async function findSDKConnectionsByOrganization(organization: string) {
+export async function findSDKConnectionsByOrganization(
+  context: ReqContext | ApiReqContext
+) {
   const docs = await SDKConnectionModel.find({
-    organization,
+    organization: context.org.id,
+  });
+
+  const connections = docs.map(toInterface);
+  return connections.filter((conn) =>
+    context.permissions.canReadMultiProjectResource(conn.projects)
+  );
+}
+
+export async function _dangerousGetSdkConnectionsAcrossMultipleOrgs(
+  organizationIds: string[]
+) {
+  const docs = await SDKConnectionModel.find({
+    organization: { $in: organizationIds },
+  });
+
+  return docs.map(toInterface);
+}
+
+export async function findAllSDKConnectionsAcrossAllOrgs() {
+  const docs = await SDKConnectionModel.find();
+  return docs.map(toInterface);
+}
+
+export async function findSDKConnectionsByIds(
+  context: ReqContext,
+  ids: string[]
+) {
+  const docs = await SDKConnectionModel.find({
+    organization: context.org.id,
+    id: { $in: ids },
   });
   return docs.map(toInterface);
 }
@@ -103,11 +170,20 @@ export const createSDKConnectionValidator = z
     organization: z.string(),
     name: z.string(),
     languages: z.array(z.string()),
+    sdkVersion: z.string().optional(),
     environment: z.string(),
-    project: z.string(),
+    projects: z.array(z.string()),
     encryptPayload: z.boolean(),
+    hashSecureAttributes: z.boolean().optional(),
+    includeVisualExperiments: z.boolean().optional(),
+    includeDraftExperiments: z.boolean().optional(),
+    includeExperimentNames: z.boolean().optional(),
+    includeRedirectExperiments: z.boolean().optional(),
+    includeRuleIds: z.boolean().optional(),
     proxyEnabled: z.boolean().optional(),
     proxyHost: z.string().optional(),
+    remoteEvalEnabled: z.boolean().optional(),
+    savedGroupReferencesEnabled: z.boolean().optional(),
   })
   .strict();
 
@@ -148,13 +224,23 @@ export async function createSDKConnection(params: CreateSDKConnectionParams) {
     }),
   };
 
-  if (connection.proxy.enabled && connection.proxy.host) {
-    const res = await testProxyConnection(connection, false);
-    connection.proxy.connected = !res.error;
-    connection.proxy.version = res.version || "";
+  if (connection.proxy.enabled) {
+    if (connection.proxy.host) {
+      const res = await testProxyConnection(connection, false);
+      if (res) {
+        connection.proxy.connected = !res.error;
+        connection.proxy.version = res.version || "";
+      }
+    } else {
+      connection.proxy.connected = true;
+    }
   }
 
   const doc = await SDKConnectionModel.create(connection);
+
+  if (IS_CLOUD) {
+    await addCloudSDKMapping(connection);
+  }
 
   return toInterface(doc);
 }
@@ -163,23 +249,39 @@ export const editSDKConnectionValidator = z
   .object({
     name: z.string().optional(),
     languages: z.array(z.string()).optional(),
+    sdkVersion: z.string().optional(),
     proxyEnabled: z.boolean().optional(),
     proxyHost: z.string().optional(),
     environment: z.string().optional(),
-    project: z.string().optional(),
-    encryptPayload: z.boolean(),
+    projects: z.array(z.string()).optional(),
+    encryptPayload: z.boolean().optional(),
+    hashSecureAttributes: z.boolean().optional(),
+    includeVisualExperiments: z.boolean().optional(),
+    includeDraftExperiments: z.boolean().optional(),
+    includeExperimentNames: z.boolean().optional(),
+    includeRedirectExperiments: z.boolean().optional(),
+    includeRuleIds: z.boolean().optional(),
+    remoteEvalEnabled: z.boolean().optional(),
+    savedGroupReferencesEnabled: z.boolean().optional(),
   })
   .strict();
 
 export async function editSDKConnection(
+  context: ReqContext | ApiReqContext,
   connection: SDKConnectionInterface,
   updates: EditSDKConnectionParams
 ) {
   const {
     proxyEnabled,
     proxyHost,
-    ...otherChanges
+    languages,
+    ...rest
   } = editSDKConnectionValidator.parse(updates);
+
+  const otherChanges = {
+    ...rest,
+    languages: languages as SDKLanguage[],
+  };
 
   let newProxy = {
     ...connection.proxy,
@@ -190,33 +292,53 @@ export async function editSDKConnection(
   if (proxyHost !== undefined && proxyHost !== connection.proxy.host) {
     newProxy.host = proxyHost;
 
-    const res = await testProxyConnection(
-      {
-        ...connection,
-        proxy: addEnvProxySettings(newProxy),
-      },
-      false
-    );
-    newProxy.connected = !res.error;
-    newProxy.version = res.version;
+    if (addEnvProxySettings(newProxy).host) {
+      const res = await testProxyConnection(
+        {
+          ...connection,
+          proxy: addEnvProxySettings(newProxy),
+        },
+        false
+      );
+      if (res) {
+        newProxy.connected = !res.error;
+        newProxy.version = res.version;
+      }
+    } else {
+      newProxy.connected = true;
+    }
   }
   newProxy = addEnvProxySettings(newProxy);
 
   // If we're changing the filter for which features are included, we should ping any
   // connected proxies to update their cache immediately instead of waiting for the TTL
   let needsProxyUpdate = false;
-  if (newProxy.enabled && newProxy.host) {
-    const keysRequiringProxyUpdate = [
-      "project",
-      "environment",
-      "encryptPayload",
-    ] as const;
-    keysRequiringProxyUpdate.forEach((key) => {
-      if (key in otherChanges && otherChanges[key] !== connection[key]) {
-        needsProxyUpdate = true;
-      }
-    });
-  }
+  const keysRequiringProxyUpdate = [
+    "sdkVersion",
+    "projects",
+    "environment",
+    "encryptPayload",
+    "hashSecureAttributes",
+    "remoteEvalEnabled",
+    "includeVisualExperiments",
+    "includeDraftExperiments",
+    "includeExperimentNames",
+    "includeRedirectExperiments",
+    "includeRuleIds",
+    "savedGroupReferencesEnabled",
+  ] as const;
+  keysRequiringProxyUpdate.forEach((key) => {
+    if (key in otherChanges && !isEqual(otherChanges[key], connection[key])) {
+      needsProxyUpdate = true;
+    }
+  });
+
+  const fullChanges = {
+    ...otherChanges,
+    proxy: newProxy,
+    project: "",
+    dateUpdated: new Date(),
+  };
 
   await SDKConnectionModel.updateOne(
     {
@@ -224,21 +346,23 @@ export async function editSDKConnection(
       id: connection.id,
     },
     {
-      $set: {
-        ...otherChanges,
-        proxy: newProxy,
-        dateUpdated: new Date(),
-      },
+      $set: fullChanges,
     }
   );
 
   if (needsProxyUpdate) {
-    await queueSingleProxyUpdate({
-      ...connection,
-      ...otherChanges,
-      proxy: newProxy,
-    } as SDKConnectionInterface);
+    // Purge CDN if used
+    const isUsingProxy = !!(newProxy.enabled && newProxy.host);
+    await triggerSingleSDKWebhookJobs(
+      context,
+      connection,
+      otherChanges as Partial<SDKConnectionInterface>,
+      newProxy,
+      isUsingProxy
+    );
   }
+
+  return { ...connection, ...fullChanges };
 }
 
 export async function deleteSDKConnectionById(
@@ -281,12 +405,27 @@ export async function setProxyError(
   );
 }
 
+export async function clearProxyError(connection: SDKConnectionInterface) {
+  await SDKConnectionModel.updateOne(
+    {
+      organization: connection.organization,
+      id: connection.id,
+    },
+    {
+      $set: {
+        "proxy.error": "",
+        "proxy.connected": true,
+      },
+    }
+  );
+}
+
 export async function testProxyConnection(
   connection: SDKConnectionInterface,
   updateDB: boolean = true
-): Promise<ProxyTestResult> {
+): Promise<ProxyTestResult | undefined> {
   const proxy = connection.proxy;
-  if (!proxy || !proxy.enabled || !proxy.host) {
+  if (!proxy || !proxy.enabled) {
     return {
       status: 0,
       body: "",
@@ -294,6 +433,10 @@ export async function testProxyConnection(
       version: "",
       url: "",
     };
+  }
+
+  if (!proxy.host) {
+    return;
   }
 
   const url = proxy.host.replace(/\/*$/, "") + "/healthcheck";
@@ -359,7 +502,10 @@ export async function testProxyConnection(
     return {
       status: statusCode || 0,
       body: body || "",
-      error: e.message || "Failed to connect to Proxy server",
+      error:
+        e?.code === "ECONNREFUSED"
+          ? "Failed to connect to proxy server (ECONNREFUSED)"
+          : e.message || "Failed to connect to proxy server",
       version: "",
       url,
     };
@@ -368,20 +514,30 @@ export async function testProxyConnection(
 
 export function toApiSDKConnectionInterface(
   connection: SDKConnectionInterface
-): ApiSDKConnectionInterface {
+): ApiSdkConnection {
   return {
     id: connection.id,
     name: connection.name,
+    organization: connection.organization,
     dateCreated: connection.dateCreated.toISOString(),
     dateUpdated: connection.dateUpdated.toISOString(),
     languages: connection.languages,
+    sdkVersion: connection.sdkVersion,
     environment: connection.environment,
-    project: connection.project,
+    project: connection.projects[0] || "",
+    projects: connection.projects,
     encryptPayload: connection.encryptPayload,
     encryptionKey: connection.encryptionKey,
+    hashSecureAttributes: connection.hashSecureAttributes,
+    includeVisualExperiments: connection.includeVisualExperiments,
+    includeDraftExperiments: connection.includeDraftExperiments,
+    includeExperimentNames: connection.includeExperimentNames,
+    includeRedirectExperiments: connection.includeRedirectExperiments,
+    includeRuleIds: connection.includeRuleIds,
     key: connection.key,
     proxyEnabled: connection.proxy.enabled,
     proxyHost: connection.proxy.host,
     proxySigningKey: connection.proxy.signingKey,
+    remoteEvalEnabled: connection.remoteEvalEnabled,
   };
 }

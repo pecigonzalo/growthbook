@@ -1,109 +1,142 @@
-import React, { ReactElement, useMemo } from "react";
 import { FaCheck, FaExclamationTriangle } from "react-icons/fa";
-import Code from "../SyntaxHighlighting/Code";
+import Code from "@/components/SyntaxHighlighting/Code";
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@/components/Radix/Tabs";
 
 export type Props = {
-  result: null | Record<string, unknown>;
+  results: Record<string, unknown>[];
   duration: number;
-  error?: string;
-  suggestions?: ReactElement[];
-  requiredColumns: string[];
   sql: string;
+  error: string;
+  close: () => void;
+  expandable?: boolean;
 };
 
 export default function DisplayTestQueryResults({
-  result,
+  results,
   duration,
-  error,
-  suggestions,
-  requiredColumns,
   sql,
+  error,
+  close,
+  expandable,
 }: Props) {
-  const missingColumns = useMemo(() => {
-    if (!result) return [];
-    return requiredColumns.filter((col) => !(col in result));
-  }, [requiredColumns, result]);
+  const cols = Object.keys(results?.[0] || {});
 
-  if (error) {
-    return (
-      <>
-        <div className="alert alert-danger mt-3">
-          {error}
-          {sql && <Code language="sql" code={sql} expandable={true} />}
-        </div>
-      </>
-    );
-  }
+  const forceShowSql = error || !results.length;
 
-  if (!result) {
-    return (
-      <div className="alert alert-warning mt-3">
-        <FaExclamationTriangle /> No rows returned, could not verify result
-        {sql && <Code language="sql" code={sql} expandable={true} />}
-      </div>
-    );
-  }
+  // Match the line number from the error message that
+  // either has "line <line number>" in it,
+  // or ends with "[<line number>:<col number>]"
+  const errorLineMatch = error.match(/line\s+(\d+)|\[(\d+):\d+\]$/i);
+  const errorLine = errorLineMatch
+    ? Number(errorLineMatch[1] || errorLineMatch[2])
+    : undefined;
 
   return (
-    <>
-      <div className="border mt-3 p-2 bg-light">
-        <div className="row">
-          <div className="col-auto">
-            <strong>Sample Row</strong>
-          </div>
-          <div className="col-auto ml-auto">
-            <div className="text-success">
-              <FaCheck />
-              <span className="pl-2">Succeeded in {duration}ms</span>
+    <Tabs
+      defaultValue={forceShowSql ? "sql" : "results"}
+      style={{ maxHeight: "50%", overflow: "hidden" }}
+    >
+      <TabsList>
+        {!forceShowSql && <TabsTrigger value="results">Results</TabsTrigger>}
+        <TabsTrigger value="sql">Rendered SQL</TabsTrigger>
+        <div className="flex-grow-1">
+          <button
+            type="button"
+            className="close"
+            style={{ padding: "0.3rem 1rem" }}
+            onClick={(e) => {
+              e.preventDefault();
+              close();
+            }}
+            aria-label="Close"
+          >
+            <span aria-hidden="true">×</span>
+          </button>
+        </div>
+      </TabsList>
+
+      {!forceShowSql && (
+        <TabsContent
+          value="results"
+          style={{ display: "flex", flexDirection: "column", height: "100%" }}
+        >
+          <div className="border mt-2 rounded p-2 bg-light">
+            <div className="row">
+              <div className="col-auto">
+                <strong>Sample {results?.length} Rows</strong>
+              </div>
+              <div className="col-auto ml-auto">
+                <div className="text-success">
+                  <FaCheck />
+                  <span className="pl-2">Succeeded in {duration}ms</span>
+                </div>
+              </div>
             </div>
           </div>
-        </div>
-      </div>
-      <div style={{ width: "100%", overflowX: "auto" }} className="mb-3">
-        <table
-          className="table table-bordered appbox w-100 mb-0"
-          style={{ overflowX: "auto" }}
-        >
-          <thead>
-            <tr>
-              {Object.keys(result).map((col) => (
-                <th key={col}>{col}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              {Object.values(result).map((val, i) => (
-                <td key={i}>{JSON.stringify(val)}</td>
-              ))}
-            </tr>
-          </tbody>
-        </table>
-      </div>
-      {missingColumns?.length > 0 && (
-        <div className="alert alert-danger">
-          <FaExclamationTriangle /> <strong>Error</strong>: You are missing the
-          following required columns:{" "}
-          {missingColumns.map((col, i) => (
-            <>
-              {i > 0 && ", "}
-              <span key={col}>
-                <code>{col}</code>
-              </span>
-            </>
-          ))}
-        </div>
+          <div
+            style={{ width: "100%", overflow: "auto", flexGrow: 1 }}
+            className="mb-3"
+          >
+            <table
+              className="table table-bordered table-sm appbox w-100 mb-0"
+              style={{ position: "relative" }}
+            >
+              <thead
+                style={{
+                  position: "sticky",
+                  top: 0,
+                  zIndex: 2,
+                  background: "white",
+                }}
+              >
+                <tr>
+                  {cols.map((col) => (
+                    <th key={col}>{col}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {results.map((result, i) => (
+                  <tr key={i}>
+                    {Object.values(result).map((val, j) => (
+                      <td key={j}>{JSON.stringify(val)}</td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </TabsContent>
       )}
-      {suggestions?.length > 0 && (
-        <div className="mb-2">
-          <strong>Suggestions:</strong>
+
+      <TabsContent
+        value="sql"
+        style={{ display: "flex", flexDirection: "column", height: "100%" }}
+      >
+        <div style={{ overflowY: "auto", height: "100%" }}>
+          {error ? (
+            <div className="alert alert-danger mr-auto">{error}</div>
+          ) : (
+            !results.length && (
+              <div className="alert alert-warning mr-auto">
+                <FaExclamationTriangle /> No rows returned, could not verify
+                result
+              </div>
+            )
+          )}
+          <Code
+            code={sql}
+            language="sql"
+            errorLine={errorLine}
+            expandable={expandable}
+          />
         </div>
-      )}
-      {suggestions?.map((suggestion, i) => (
-        <div className="alert alert-info mb-3" key={i}>
-          {suggestion}
-        </div>
-      ))}
-    </>
+      </TabsContent>
+    </Tabs>
   );
 }

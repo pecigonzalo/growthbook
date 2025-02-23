@@ -1,127 +1,125 @@
 import { useRouter } from "next/router";
-import { FaCog, FaFileDownload, FaPencilAlt } from "react-icons/fa";
+import { FaFileDownload, FaPencilAlt } from "react-icons/fa";
 import { BiTable } from "react-icons/bi";
 import { Queries } from "back-end/types/query";
 import {
   ExperimentReportResultDimension,
   ExperimentReportVariation,
+  ExperimentSnapshotReportArgs,
   ReportInterface,
 } from "back-end/types/report";
 import { BsArrowRepeat } from "react-icons/bs";
+import { DataSourceInterfaceWithParams } from "back-end/types/datasource";
+import { ExperimentInterfaceStringDates } from "back-end/types/experiment";
 import { useAuth } from "@/services/auth";
-import usePermissions from "@/hooks/usePermissions";
 import ResultsDownloadButton from "@/components/Experiment/ResultsDownloadButton";
 import Button from "@/components/Button";
 import MoreMenu from "@/components/Dropdown/MoreMenu";
 import ViewAsyncQueriesButton from "@/components/Queries/ViewAsyncQueriesButton";
 import Tooltip from "@/components/Tooltip/Tooltip";
+import track from "@/services/track";
+import usePermissionsUtil from "@/hooks/usePermissionsUtils";
 
 export default function ResultMoreMenu({
+  experiment,
   editMetrics,
-  configure,
   queries,
   queryError,
   hasData,
   supportsNotebooks,
-  id,
-  generateReport,
+  snapshotId,
+  reportArgs,
   notebookUrl,
   notebookFilename,
-  hasUserQuery,
   forceRefresh,
   results,
   metrics,
   variations,
   trackingKey,
   dimension,
+  datasource,
   project,
 }: {
+  experiment?: ExperimentInterfaceStringDates;
   editMetrics?: () => void;
-  configure: () => void;
   queries?: Queries;
   queryError?: string;
   hasData?: boolean;
   supportsNotebooks?: boolean;
-  id: string;
-  generateReport?: boolean;
-  notebookUrl?: string;
-  notebookFilename?: string;
-  hasUserQuery?: boolean;
+  snapshotId?: string;
+  reportArgs?: ExperimentSnapshotReportArgs;
+  notebookUrl: string;
+  notebookFilename: string;
   forceRefresh?: () => Promise<void>;
   results?: ExperimentReportResultDimension[];
   metrics?: string[];
   variations?: ExperimentReportVariation[];
   trackingKey?: string;
   dimension?: string;
+  datasource?: DataSourceInterfaceWithParams | null;
   project?: string;
 }) {
   const { apiCall } = useAuth();
   const router = useRouter();
-  const permissions = usePermissions();
+  const permissionsUtil = usePermissionsUtil();
 
-  const canEdit = permissions.check("createAnalyses", project);
+  const canEdit = permissionsUtil.canViewExperimentModal(project);
 
   const canDownloadJupyterNotebook =
-    hasData &&
-    !hasUserQuery &&
-    supportsNotebooks &&
-    notebookUrl &&
-    notebookFilename;
+    hasData && supportsNotebooks && notebookUrl && notebookFilename;
+
+  const isBandit = experiment?.type === "multi-armed-bandit";
 
   return (
-    <MoreMenu>
-      {canEdit && (
-        <button
-          className="btn dropdown-item py-2"
-          onClick={(e) => {
-            e.preventDefault();
-            configure();
-          }}
-        >
-          <FaCog className="mr-2" /> Configure Analysis
-        </button>
-      )}
-      {queries?.length > 0 && (
+    <MoreMenu autoCloseOnClick={false}>
+      {(queries?.length ?? 0) > 0 && (
         <ViewAsyncQueriesButton
-          queries={queries.map((q) => q.query)}
+          queries={queries?.map((q) => q.query) ?? []}
           error={queryError}
           className="dropdown-item py-2"
+          display=" View Queries"
         />
       )}
-      {forceRefresh && permissions.check("runQueries", "") && (
-        <button
-          className="btn dropdown-item py-2"
-          onClick={(e) => {
-            e.preventDefault();
-            forceRefresh();
-          }}
-        >
-          <BsArrowRepeat className="mr-2" /> Re-run All Queries
-        </button>
-      )}
-      {hasData && queries && !hasUserQuery && generateReport && canEdit && (
+      {forceRefresh &&
+        datasource &&
+        permissionsUtil.canRunExperimentQueries(datasource) && (
+          <button
+            className="btn dropdown-item py-2"
+            onClick={(e) => {
+              e.preventDefault();
+              forceRefresh();
+            }}
+          >
+            <BsArrowRepeat className="mr-2" /> Re-run All Queries
+          </button>
+        )}
+      {snapshotId &&
+      experiment &&
+      permissionsUtil.canCreateReport(experiment) ? (
         <Button
           className="dropdown-item py-2"
           color="outline-info"
           onClick={async () => {
             const res = await apiCall<{ report: ReportInterface }>(
-              `/experiments/report/${id}`,
+              `/experiments/report/${snapshotId}`,
               {
                 method: "POST",
+                body: reportArgs ? JSON.stringify(reportArgs) : undefined,
               }
             );
-
             if (!res.report) {
               throw new Error("Failed to create report");
             }
-
+            track("Experiment Report: Create", {
+              source: "experiment results tab",
+            });
             await router.push(`/report/${res.report.id}`);
           }}
         >
-          <BiTable className="mr-2" style={{ fontSize: "1.2rem" }} /> Ad-hoc
+          <BiTable className="mr-2" style={{ fontSize: "1.2rem" }} /> New Custom
           Report
         </Button>
-      )}
+      ) : null}
       <Tooltip
         shouldDisplay={!canDownloadJupyterNotebook}
         body="To download results as a Jupyter notebook, you must set up a Jupyter Notebook query runner. View our docs for more info."
@@ -158,7 +156,7 @@ export default function ResultMoreMenu({
           Download Notebook
         </Button>
       </Tooltip>
-      {canEdit && editMetrics && (
+      {canEdit && editMetrics && !isBandit && (
         <button
           type="button"
           className="dropdown-item py-2"
@@ -174,8 +172,8 @@ export default function ResultMoreMenu({
           results={results}
           metrics={metrics}
           variations={variations}
-          trackingKey={trackingKey}
-          dimension={dimension}
+          trackingKey={trackingKey || ""}
+          dimension={dimension || ""}
         />
       )}
     </MoreMenu>

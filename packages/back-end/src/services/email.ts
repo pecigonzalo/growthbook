@@ -1,6 +1,7 @@
 import path from "path";
 import nodemailer from "nodemailer";
 import nunjucks from "nunjucks";
+import { daysLeft } from "shared/dates";
 import {
   EMAIL_ENABLED,
   EMAIL_FROM,
@@ -10,32 +11,38 @@ import {
   EMAIL_PORT,
   SITE_MANAGER_EMAIL,
   APP_ORIGIN,
-} from "../util/secrets";
-import { OrganizationInterface } from "../../types/organization";
-import { getEmailFromUserId, getInviteUrl } from "./organizations";
-export function isEmailEnabled(): boolean {
-  if (!EMAIL_ENABLED) return false;
-  if (!EMAIL_HOST) return false;
-  if (!EMAIL_PORT) return false;
-  if (!EMAIL_HOST_USER) return false;
-  if (!EMAIL_HOST_PASSWORD) return false;
-  if (!EMAIL_FROM) return false;
+} from "back-end/src/util/secrets";
+import { OrganizationInterface } from "back-end/types/organization";
+import { getEmailFromUserId } from "back-end/src/models/UserModel";
+import { getInviteUrl } from "./organizations";
 
-  return true;
+export function isEmailEnabled(): boolean {
+  return !!(EMAIL_ENABLED && EMAIL_HOST && EMAIL_PORT && EMAIL_FROM);
 }
-nunjucks.configure(path.join(__dirname, "..", "templates", "email"), {
-  autoescape: true,
-});
+
+const noHyperlink = (str: string) => str.replace(/[^a-zA-Z0-9\s]/g, "");
+
+const env = nunjucks.configure(
+  path.join(__dirname, "..", "templates", "email"),
+  {
+    autoescape: true,
+  }
+);
+
+env.addFilter("noHyperlink", noHyperlink);
 
 const transporter = isEmailEnabled()
   ? nodemailer.createTransport({
       host: EMAIL_HOST,
       port: EMAIL_PORT,
       secure: EMAIL_PORT === 465,
-      auth: {
-        user: EMAIL_HOST_USER,
-        pass: EMAIL_HOST_PASSWORD,
-      },
+      ...(EMAIL_HOST_USER &&
+        EMAIL_HOST_PASSWORD && {
+          auth: {
+            user: EMAIL_HOST_USER,
+            pass: EMAIL_HOST_PASSWORD,
+          },
+        }),
     })
   : null;
 
@@ -55,6 +62,9 @@ async function sendMail({
   if (!isEmailEnabled() || !transporter) {
     throw new Error("Email server not configured.");
   }
+  if (typeof to !== "string") {
+    throw new Error("Email address must be a string");
+  }
 
   const headers: { [key: string]: string } = {};
 
@@ -73,6 +83,7 @@ async function sendMail({
     headers,
   });
 }
+
 export async function sendInviteEmail(
   organization: OrganizationInterface,
   key: string
@@ -90,7 +101,9 @@ export async function sendInviteEmail(
 
   await sendMail({
     html,
-    subject: `You've been invited to join ${organization.name} on GrowthBook`,
+    subject: `You've been invited to join ${noHyperlink(
+      organization.name
+    )} on GrowthBook`,
     to: invite.email,
     text: `Join ${organization.name} on GrowthBook by visiting ${inviteUrl}`,
     ignoreUnsubscribes: true,
@@ -103,13 +116,18 @@ export async function sendExperimentChangesEmail(
   experimentName: string,
   experimentChanges: string[]
 ) {
-  const experimentUrl = APP_ORIGIN + "experiment/" + experimentId + "#results";
+  const experimentUrl =
+    APP_ORIGIN +
+    (APP_ORIGIN.endsWith("/") ? "" : "/") +
+    "experiment/" +
+    experimentId +
+    "#results";
   const html = nunjucks.render("experiment-changes.jinja", {
     experimentChanges,
     experimentUrl,
     experimentName,
   });
-  const subject = `Experiment Change for: ${experimentName}`;
+  const subject = `Experiment Change for: ${noHyperlink(experimentName)}`;
 
   await Promise.all(
     userIds.map(async (id) => {
@@ -119,7 +137,9 @@ export async function sendExperimentChangesEmail(
         subject,
         to: email,
         text:
-          `The experiment '${experimentName}' has the following metric changes:` +
+          `The experiment '${noHyperlink(
+            experimentName
+          )}' has the following metric changes:` +
           "- " +
           experimentChanges.join("\n- ") +
           `\n\nSee more details at ${experimentUrl}`,
@@ -150,9 +170,9 @@ export async function sendNewOrgEmail(company: string, email: string) {
   });
   await sendMail({
     html,
-    subject: `New company created: ${company}`,
+    subject: `New company created: ${noHyperlink(company)}`,
     to: SITE_MANAGER_EMAIL,
-    text: `Company Name: ${company}\nOwner Email: ${email}`,
+    text: `Company Name: ${noHyperlink(company)}\nOwner Email: ${email}`,
   });
 }
 
@@ -170,9 +190,13 @@ export async function sendNewMemberEmail(
 
   await sendMail({
     html,
-    subject: `A new user joined your GrowthBook account: ${name} (${email})`,
+    subject: `A new user joined your GrowthBook account: ${noHyperlink(
+      name
+    )} (${email})`,
     to: ownerEmail,
-    text: `Organization: ${organization}\nName: ${name}\nEmail: ${email}`,
+    text: `Organization: ${noHyperlink(organization)}\nName: ${noHyperlink(
+      name
+    )}\nEmail: ${email}`,
   });
 }
 
@@ -192,9 +216,13 @@ export async function sendPendingMemberEmail(
 
   await sendMail({
     html,
-    subject: `A new user is requesting to join your GrowthBook account: ${name} (${email})`,
+    subject: `A new user is requesting to join your GrowthBook account: ${noHyperlink(
+      name
+    )} (${email})`,
     to: ownerEmail,
-    text: `Organization: ${organization}\nName: ${name}\nEmail: ${email}`,
+    text: `Organization: ${noHyperlink(organization)}\nName: ${noHyperlink(
+      name
+    )}\nEmail: ${email}`,
   });
 }
 
@@ -212,8 +240,76 @@ export async function sendPendingMemberApprovalEmail(
 
   await sendMail({
     html,
-    subject: `You've been approved as a member with ${organization} on GrowthBook`,
+    subject: `You've been approved as a member with ${noHyperlink(
+      organization
+    )} on GrowthBook`,
     to: email,
-    text: `Join ${organization} on GrowthBook`,
+    text: `Join ${noHyperlink(organization)} on GrowthBook`,
+  });
+}
+
+export async function sendStripeTrialWillEndEmail({
+  email,
+  organization,
+  endDate,
+  hasPaymentMethod,
+  billingUrl,
+}: {
+  email: string;
+  organization: string;
+  endDate: Date;
+  hasPaymentMethod: boolean;
+  billingUrl: string;
+}) {
+  const trialRemaining = Math.max(daysLeft(endDate), 1);
+  const trialDaysText = `${trialRemaining} day${
+    trialRemaining === 1 ? "" : "s"
+  }`;
+  const html = nunjucks.render("trial-will-end.jinja", {
+    trialDaysText,
+    hasPaymentMethod,
+    organization,
+    billingUrl,
+  });
+
+  const text = `Your GrowthBook Pro trial will end soon in ${trialDaysText}. ${
+    hasPaymentMethod
+      ? "Your credit card will be billed automatically."
+      : "Add a credit card to avoid losing access to GrowthBook Pro."
+  }`;
+
+  await sendMail({
+    html,
+    subject: `Your GrowthBook Pro trial will end in ${trialDaysText}`,
+    to: email,
+    text,
+  });
+}
+
+export async function sendOwnerEmailChangeEmail(
+  email: string,
+  organization: string,
+  originalOwner: string,
+  newOwner: string
+) {
+  const html = nunjucks.render("owner-email-change.jinja", {
+    email,
+    organization,
+    originalOwner,
+    newOwner,
+  });
+
+  await sendMail({
+    html,
+    subject: `The owner for ${organization} on GrowthBook has changed`,
+    to: originalOwner,
+    text: `The owner for ${organization} on GrowthBook has been changed to ${newOwner} by ${email}`,
+  });
+
+  await sendMail({
+    html,
+    subject: `The owner for ${organization} on GrowthBook has changed`,
+    to: newOwner,
+    text: `The owner for ${organization} on GrowthBook has been changed to ${newOwner} by ${email}`,
   });
 }

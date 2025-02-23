@@ -1,189 +1,165 @@
 import { KnownBlock } from "@slack/web-api";
-import uniq from "lodash/uniq";
-import isEqual from "lodash/isEqual";
-import intersection from "lodash/intersection";
-import { logger } from "../../../util/logger";
-import { cancellableFetch } from "../../../util/http.util";
+import formatNumber from "number-format.js";
+import { logger } from "back-end/src/util/logger";
+import { cancellableFetch } from "back-end/src/util/http.util";
 import {
-  FeatureCreatedNotificationEvent,
-  FeatureDeletedNotificationEvent,
-  FeatureUpdatedNotificationEvent,
   NotificationEvent,
-} from "../../base-events";
-import { SlackIntegrationInterface } from "../../../../types/slack-integration";
-import { FeatureInterface } from "../../../../types/feature";
-import { APP_ORIGIN } from "../../../util/secrets";
+  LegacyNotificationEvent,
+} from "back-end/src/events/notification-events";
+import { EventInterface } from "back-end/types/event";
+import { getEvent } from "back-end/src/models/EventModel";
+import { SlackIntegrationInterface } from "back-end/types/slack-integration";
+import { APP_ORIGIN } from "back-end/src/util/secrets";
+import {
+  FilterDataForNotificationEvent,
+  getFilterDataForNotificationEvent,
+} from "back-end/src/events/handlers/utils";
+import { ExperimentWarningNotificationPayload } from "back-end/src/validators/experiment-warnings";
+import { ExperimentInfoSignificancePayload } from "back-end/src/validators/experiment-info";
 
 // region Filtering
 
-type DataForNotificationEvent = {
-  filterData: {
-    tags: string[];
-    projects: string[];
-    environments: string[];
-  };
+export type DataForNotificationEvent = {
+  filterData: FilterDataForNotificationEvent;
   slackMessage: SlackMessage;
 };
 
-export const getDataForNotificationEvent = (
+export const getSlackMessageForNotificationEvent = async (
   event: NotificationEvent,
   eventId: string
-): DataForNotificationEvent | null => {
+): Promise<SlackMessage | null> => {
+  let invalidEvent: never;
+
   switch (event.event) {
-    case "feature.created":
-      return {
-        filterData: {
-          tags: event.data.current.tags || [],
-          projects: event.data.current.project
-            ? [event.data.current.project]
-            : [],
-          environments: Object.keys(event.data.current.environmentSettings),
-        },
-        slackMessage: buildSlackMessageForFeatureCreatedEvent(event, eventId),
-      };
-
-    case "feature.updated":
-      return {
-        filterData: {
-          tags: uniq(
-            (event.data.current.tags || []).concat(
-              event.data.previous.tags || []
-            )
-          ),
-          projects: uniq(
-            (event.data.current.project
-              ? [event.data.current.project]
-              : []
-            ).concat(
-              event.data.previous.project ? [event.data.previous.project] : []
-            )
-          ),
-          environments: uniq(
-            Object.keys(event.data.current.environmentSettings).concat(
-              Object.keys(event.data.previous.environmentSettings)
-            )
-          ),
-        },
-        slackMessage: buildSlackMessageForFeatureUpdatedEvent(event, eventId),
-      };
-
-    case "feature.deleted":
-      return {
-        filterData: {
-          tags: event.data.previous.tags || [],
-          projects: event.data.previous.project
-            ? [event.data.previous.project]
-            : [],
-          environments: Object.keys(event.data.previous.environmentSettings),
-        },
-        slackMessage: buildSlackMessageForFeatureDeletedEvent(event, eventId),
-      };
-
-    case "experiment.created":
-    case "experiment.updated":
-    case "experiment.deleted":
-      // TODO: https://linear.app/growthbook/issue/GB-19
+    case "user.login":
       return null;
-  }
-};
-
-/**
- * Predicate for Array.filter.
- * Depending on the resource type, each event type may have different relevance.
- * For example, for features, all created and deleted events are relevant
- * but only some update events are.
- * We filter the integration out based on resource- and event-specific requirements.
- * We shouldn't filter for unsupported events but in case we do, we are returning false for those.
- * @param slackIntegration
- * @param event
- * @return boolean should include
- */
-export const filterSlackIntegrationForRelevance = (
-  slackIntegration: SlackIntegrationInterface,
-  event: NotificationEvent
-): boolean => {
-  switch (event.event) {
-    case "experiment.created":
-    case "experiment.updated":
-    case "experiment.deleted":
-      // TODO: https://linear.app/growthbook/issue/GB-19
-      return false;
 
     case "feature.created":
-    case "feature.deleted":
-      return true;
+      return buildSlackMessageForFeatureCreatedEvent(
+        event.data.object.id,
+        eventId
+      );
 
     case "feature.updated":
-      return filterFeatureUpdateEventForRelevance(slackIntegration, event);
+      return buildSlackMessageForFeatureUpdatedEvent(
+        event.data.object.id,
+        eventId
+      );
+
+    case "feature.deleted":
+      return buildSlackMessageForFeatureDeletedEvent(
+        event.data.object.id,
+        eventId
+      );
+
+    case "experiment.created":
+      return buildSlackMessageForExperimentCreatedEvent(
+        event.data.object,
+        eventId
+      );
+
+    case "experiment.updated":
+      return buildSlackMessageForExperimentUpdatedEvent(
+        event.data.object,
+        eventId
+      );
+
+    case "experiment.warning":
+      return buildSlackMessageForExperimentWarningEvent(event.data.object);
+
+    case "experiment.info.significance":
+      return buildSlackMessageForExperimentInfoSignificanceEvent(
+        event.data.object
+      );
+
+    case "experiment.deleted":
+      return buildSlackMessageForExperimentDeletedEvent(
+        event.data.object.name,
+        eventId
+      );
+
+    case "webhook.test":
+      return buildSlackMessageForWebhookTestEvent(event.data.object.webhookId);
+
+    default:
+      invalidEvent = event;
+      throw `Invalid event: ${invalidEvent}`;
   }
 };
 
-// region Filtering -> feature
+export const getSlackMessageForLegacyNotificationEvent = async (
+  event: LegacyNotificationEvent,
+  eventId: string
+): Promise<SlackMessage | null> => {
+  let invalidEvent: never;
 
-/**
- * Filters the update event, considering environments and relevant keys that impact all environments.
- * @param slackIntegration
- * @param featureEvent
- * @return boolean should include
- */
-const filterFeatureUpdateEventForRelevance = (
-  slackIntegration: SlackIntegrationInterface,
-  featureEvent: FeatureUpdatedNotificationEvent
-): boolean => {
-  const { previous, current } = featureEvent.data;
+  switch (event.event) {
+    case "user.login":
+      return null;
 
-  if (previous.archived && current.archived) {
-    // Do not notify for archived features
-    return false;
+    case "feature.created":
+      return buildSlackMessageForFeatureCreatedEvent(
+        event.data.current.id,
+        eventId
+      );
+
+    case "feature.updated":
+      return buildSlackMessageForFeatureUpdatedEvent(
+        event.data.current.id,
+        eventId
+      );
+
+    case "feature.deleted":
+      return buildSlackMessageForFeatureDeletedEvent(
+        event.data.previous.id,
+        eventId
+      );
+
+    case "experiment.created":
+      return buildSlackMessageForExperimentCreatedEvent(
+        event.data.current,
+        eventId
+      );
+
+    case "experiment.updated":
+      return buildSlackMessageForExperimentUpdatedEvent(
+        event.data.current,
+        eventId
+      );
+
+    case "experiment.warning":
+      return buildSlackMessageForExperimentWarningEvent(event.data);
+
+    case "experiment.deleted":
+      return buildSlackMessageForExperimentDeletedEvent(
+        event.data.previous.name,
+        eventId
+      );
+
+    case "webhook.test":
+      return buildSlackMessageForWebhookTestEvent(event.data.webhookId);
+
+    default:
+      invalidEvent = event;
+      throw `Invalid event: ${invalidEvent}`;
   }
+};
 
-  // Manual environment filtering
-  const changedEnvironments = new Set<string>();
+export const getSlackDataForNotificationEvent = async (
+  event: EventInterface
+): Promise<DataForNotificationEvent | null> => {
+  if (event.event === "webhook.test") return null;
 
-  // Some of the feature keys that change affect all enabled environments
-  const relevantKeysForAllEnvs: (keyof FeatureInterface)[] = [
-    "archived",
-    "defaultValue",
-    "project",
-    "valueType",
-    "nextScheduledUpdate",
-  ];
-  if (relevantKeysForAllEnvs.some((k) => !isEqual(previous[k], current[k]))) {
-    // Some of the relevant keys for all environments has changed.
-    return true;
-  }
+  const filterData = getFilterDataForNotificationEvent(event.data);
+  if (!filterData) return null;
 
-  const allEnvs = new Set([
-    ...Object.keys(previous.environmentSettings),
-    ...Object.keys(current.environmentSettings),
-  ]);
+  const slackMessage = await (event.version
+    ? getSlackMessageForNotificationEvent(event.data, event.id)
+    : getSlackMessageForLegacyNotificationEvent(event.data, event.id));
 
-  // Add in environments if their specific settings changed
-  allEnvs.forEach((env) => {
-    const previousEnvSettings = previous.environmentSettings[env];
-    const currentEnvSettings = current.environmentSettings[env];
+  if (!slackMessage) return null;
 
-    // If the environment is disabled both before and after the change, ignore changes
-    if (!previousEnvSettings?.enabled && !currentEnvSettings?.enabled) {
-      return;
-    }
-
-    // the environment has changed
-    if (!isEqual(previousEnvSettings, currentEnvSettings)) {
-      changedEnvironments.add(env);
-    }
-  });
-
-  const environmentChangesAreRelevant = changedEnvironments.size > 0;
-  if (!environmentChangesAreRelevant) {
-    return false;
-  }
-
-  return (
-    slackIntegration.environments.length === 0 ||
-    intersection(Array.from(changedEnvironments), slackIntegration.environments)
-      .length > 0
-  );
+  return { filterData, slackMessage };
 };
 
 // endregion Filtering -> feature
@@ -220,19 +196,31 @@ export const getSlackIntegrationContextBlock = (
 
 // region Event-specific messages -> Feature
 
-const getFeatureUrlFormatted = (featureId: string): string =>
+export const getFeatureUrlFormatted = (featureId: string): string =>
   `\n• <${APP_ORIGIN}/features/${featureId}|View Feature>`;
 
-const getEventUrlFormatted = (eventId: string): string =>
+export const getEventUrlFormatted = (eventId: string): string =>
   `\n• <${APP_ORIGIN}/events/${eventId}|View Event>`;
 
-const buildSlackMessageForFeatureCreatedEvent = (
-  featureEvent: FeatureCreatedNotificationEvent,
-  eventId: string
-): SlackMessage => {
-  const featureId = featureEvent.data.current.id;
+export const getEventUserFormatted = async (eventId: string) => {
+  const event = await getEvent(eventId);
 
-  const text = `The feature ${featureId} has been created`;
+  if (!event || !event.data?.user) return "an unknown user";
+
+  if (event.data.user.type === "api_key")
+    return `an API request with key ending in ...${event.data.user.apiKey.slice(
+      -4
+    )}`;
+  return `${event.data.user.name} (${event.data.user.email})`;
+};
+
+const buildSlackMessageForFeatureCreatedEvent = async (
+  featureId: string,
+  eventId: string
+): Promise<SlackMessage> => {
+  const eventUser = await getEventUserFormatted(eventId);
+
+  const text = `The feature ${featureId} has been created by ${eventUser}`;
 
   return {
     text,
@@ -242,7 +230,7 @@ const buildSlackMessageForFeatureCreatedEvent = (
         text: {
           type: "mrkdwn",
           text:
-            `The feature *${featureId}* has been created.` +
+            `The feature *${featureId}* has been created by ${eventUser}.` +
             getFeatureUrlFormatted(featureId) +
             getEventUrlFormatted(eventId),
         },
@@ -251,13 +239,13 @@ const buildSlackMessageForFeatureCreatedEvent = (
   };
 };
 
-const buildSlackMessageForFeatureUpdatedEvent = (
-  featureEvent: FeatureUpdatedNotificationEvent,
+const buildSlackMessageForFeatureUpdatedEvent = async (
+  featureId: string,
   eventId: string
-): SlackMessage => {
-  const featureId = featureEvent.data.current.id;
+): Promise<SlackMessage> => {
+  const eventUser = await getEventUserFormatted(eventId);
 
-  const text = `The feature ${featureId} has been updated`;
+  const text = `The feature ${featureId} has been updated by ${eventUser}`;
 
   return {
     text,
@@ -267,7 +255,7 @@ const buildSlackMessageForFeatureUpdatedEvent = (
         text: {
           type: "mrkdwn",
           text:
-            `The feature *${featureId}* has been updated.` +
+            `The feature *${featureId}* has been updated ${eventUser}.` +
             getFeatureUrlFormatted(featureId) +
             getEventUrlFormatted(eventId),
         },
@@ -276,12 +264,12 @@ const buildSlackMessageForFeatureUpdatedEvent = (
   };
 };
 
-const buildSlackMessageForFeatureDeletedEvent = (
-  featureEvent: FeatureDeletedNotificationEvent,
+const buildSlackMessageForFeatureDeletedEvent = async (
+  featureId: string,
   eventId: string
-): SlackMessage => {
-  const featureId = featureEvent.data.previous.id;
-  const text = `The feature ${featureId} has been deleted.`;
+): Promise<SlackMessage> => {
+  const eventUser = await getEventUserFormatted(eventId);
+  const text = `The feature ${featureId} has been deleted by ${eventUser}.`;
 
   return {
     text,
@@ -291,7 +279,7 @@ const buildSlackMessageForFeatureDeletedEvent = (
         text: {
           type: "mrkdwn",
           text:
-            `The feature *${featureId}* has been deleted.` +
+            `The feature *${featureId}* has been deleted by ${eventUser}.` +
             getEventUrlFormatted(eventId),
         },
       },
@@ -300,6 +288,243 @@ const buildSlackMessageForFeatureDeletedEvent = (
 };
 
 // endregion Event-specific messages -> Feature
+
+// region Event-specific messages -> Experiment
+
+export const getExperimentUrlFormatted = (experimentId: string): string =>
+  `\n• <${APP_ORIGIN}/experiment/${experimentId}|View Experiment>`;
+
+export const getExperimentUrlAndNameFormatted = (
+  experimentId: string,
+  experimentName: string
+): string => `<${APP_ORIGIN}/experiment/${experimentId}|${experimentName}>`;
+
+const buildSlackMessageForExperimentCreatedEvent = (
+  { id: experimentId, name: experimentName }: { id: string; name: string },
+  eventId: string
+): SlackMessage => {
+  const text = `The experiment ${experimentName} has been created`;
+
+  return {
+    text,
+    blocks: [
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text:
+            `The experiment *${experimentName}* has been created.` +
+            getExperimentUrlFormatted(experimentId) +
+            getEventUrlFormatted(eventId),
+        },
+      },
+    ],
+  };
+};
+
+const buildSlackMessageForExperimentUpdatedEvent = (
+  { id: experimentId, name: experimentName }: { id: string; name: string },
+  eventId: string
+): SlackMessage => {
+  const text = `The experiment ${experimentName} has been updated`;
+
+  return {
+    text,
+    blocks: [
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text:
+            `The experiment *${experimentName}* has been updated.` +
+            getExperimentUrlFormatted(experimentId) +
+            getEventUrlFormatted(eventId),
+        },
+      },
+    ],
+  };
+};
+
+const buildSlackMessageForWebhookTestEvent = (
+  webhookId: string
+): SlackMessage => ({
+  text: `This is a test event for webhook ${webhookId}`,
+  blocks: [
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: `This is a *test event* for ${webhookId}`,
+      },
+    },
+  ],
+});
+
+const buildSlackMessageForExperimentDeletedEvent = (
+  experimentName: string,
+  eventId: string
+): SlackMessage => {
+  const text = `The experiment ${experimentName} has been deleted`;
+
+  return {
+    text,
+    blocks: [
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text:
+            `The experiment *${experimentName}* has been deleted.` +
+            getEventUrlFormatted(eventId),
+        },
+      },
+    ],
+  };
+};
+
+const buildSlackMessageForExperimentInfoSignificanceEvent = ({
+  metricName,
+  experimentName,
+  experimentId,
+  variationName,
+  statsEngine,
+  criticalValue,
+  winning,
+}: ExperimentInfoSignificancePayload): SlackMessage => {
+  const percentFormatter = (v: number) => {
+    if (v > 0.99) {
+      return ">99%";
+    }
+    if (v < 0.01) {
+      return "<1%";
+    }
+    return formatNumber("#0.%", v * 100);
+  };
+
+  const text = ({
+    metricName,
+    variationName,
+    experimentName,
+  }: {
+    metricName: string;
+    variationName: string;
+    experimentName: string;
+  }) => {
+    if (statsEngine === "frequentist") {
+      return `In experiment ${experimentName}: metric ${metricName} for variation ${variationName} is ${
+        winning ? "beating" : "losing to"
+      } the baseline and has reached statistical significance (p-value = ${criticalValue.toFixed(
+        3
+      )}).`;
+    }
+    return `In experiment ${experimentName}: metric ${metricName} for variation ${variationName} has ${
+      winning ? "reached a" : "dropped to a"
+    } ${percentFormatter(criticalValue)} chance to beat the baseline.`;
+  };
+
+  return {
+    text: text({ metricName, experimentName, variationName }),
+    blocks: [
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: text({
+            metricName: `*${metricName}*`,
+            experimentName: getExperimentUrlAndNameFormatted(
+              experimentId,
+              experimentName
+            ),
+            variationName: `*${variationName}*`,
+          }),
+        },
+      },
+    ],
+  };
+};
+
+const buildSlackMessageForExperimentWarningEvent = (
+  data: ExperimentWarningNotificationPayload
+): SlackMessage => {
+  let invalidData: never;
+
+  switch (data.type) {
+    case "auto-update": {
+      const makeText = (name: string) =>
+        `Automatic snapshot creation for ${name} ${
+          data.success ? "succeeded" : "failed"
+        }!`;
+
+      return {
+        text: makeText(data.experimentName),
+        blocks: [
+          {
+            type: "section",
+            text: {
+              type: "mrkdwn",
+              text:
+                makeText(`*${data.experimentName}*`) +
+                getExperimentUrlFormatted(data.experimentId),
+            },
+          },
+        ],
+      };
+    }
+
+    case "multiple-exposures": {
+      const numberFormatter = (v: number) => formatNumber("#,##0.", v);
+      const percentFormatter = (v: number) => formatNumber("#0.%", v * 100);
+
+      const text = (experimentName: string) =>
+        `Multiple Exposures Warning for experiment ${experimentName}: ${numberFormatter(
+          data.usersCount
+        )} users (${percentFormatter(
+          data.percent
+        )}%) saw multiple variations and were automatically removed from results.`;
+
+      return {
+        text: text(data.experimentName),
+        blocks: [
+          {
+            type: "section",
+            text: {
+              type: "mrkdwn",
+              text:
+                text(`*${data.experimentName}*`) +
+                getExperimentUrlFormatted(data.experimentId),
+            },
+          },
+        ],
+      };
+    }
+
+    case "srm": {
+      const text = (experimentName: string) =>
+        `Traffic imbalance detected for experiment detected for experiment ${experimentName} : Sample Ratio Mismatch (SRM) p-value below ${data.threshold}.`;
+
+      return {
+        text: text(data.experimentName),
+        blocks: [
+          {
+            type: "section",
+            text: {
+              type: "mrkdwn",
+              text:
+                text(`*${data.experimentName}*`) +
+                getExperimentUrlFormatted(data.experimentId),
+            },
+          },
+        ],
+      };
+    }
+
+    default:
+      invalidData = data;
+      throw `Invalid data: ${invalidData}`;
+  }
+};
+
+// endregion Event-specific messages -> Experiment
 
 // endregion Event-specific messages
 

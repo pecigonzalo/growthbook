@@ -13,7 +13,7 @@ import emoji from "@jukben/emoji-search";
 import { useDropzone } from "react-dropzone";
 import { useAuth } from "@/services/auth";
 import { uploadFile } from "@/services/files";
-import LoadingOverlay from "../LoadingOverlay";
+import LoadingOverlay from "@/components/LoadingOverlay";
 import Markdown from "./Markdown";
 
 const Item = ({ entity: { name, char } }) => <div>{`${name}: ${char}`}</div>;
@@ -75,7 +75,7 @@ const MarkdownInput: FC<{
     onDrop,
     noClick: true,
     noKeyboard: true,
-    accept: "image/png, image/jpeg, image/gif, text/svg",
+    accept: "image/png, image/jpeg, image/gif",
   });
 
   // getRootProps assumes generic HTMLElement, but we're using HTMLDivElement
@@ -86,12 +86,14 @@ const MarkdownInput: FC<{
   >;
 
   return (
-    <div className="card">
-      <div className="card-header">
+    <div className="">
+      <div className="px-3 mb-1">
         <ul className="nav nav-tabs card-header-tabs">
-          <li className="nav-item">
+          <li className="nav-item" style={!preview ? { zIndex: 100 } : {}}>
             <a
-              className={clsx("nav-link", { active: !preview })}
+              className={clsx("nav-link px-3 py-1 link-purple no-underline", {
+                active: !preview,
+              })}
               href="#"
               onClick={(e) => {
                 e.preventDefault();
@@ -103,7 +105,7 @@ const MarkdownInput: FC<{
           </li>
           <li className="nav-item">
             <a
-              className={clsx("nav-link", {
+              className={clsx("nav-link px-3 py-1 link-purple no-underline", {
                 active: preview,
                 disabled: value?.length < 1,
               })}
@@ -118,9 +120,10 @@ const MarkdownInput: FC<{
           </li>
         </ul>
       </div>
-      <div className="card-body pb-2">
-        {preview && <Markdown className="card-text">{value}</Markdown>}
-
+      <div className="py-2">
+        {preview && (
+          <Markdown className="card-text pt-2 border-top">{value}</Markdown>
+        )}
         <div
           className={clsx({
             "d-none": preview,

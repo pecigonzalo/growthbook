@@ -25,9 +25,11 @@ export type SelectOptions =
 
 export type BaseFieldProps = {
   label?: ReactNode;
+  markRequired?: boolean;
   error?: ReactNode;
   helpText?: ReactNode;
   containerClassName?: string;
+  inputGroupClassName?: string;
   labelClassName?: string;
   // eslint-disable-next-line
   render?: (id: string, ref: any) => ReactElement;
@@ -37,9 +39,10 @@ export type BaseFieldProps = {
   minRows?: number;
   maxRows?: number;
   textarea?: boolean;
-  prepend?: string;
-  append?: string;
+  prepend?: ReactElement | string;
+  append?: ReactElement | string;
   comboBox?: boolean;
+  currentLength?: number;
 };
 
 export type FieldProps = BaseFieldProps &
@@ -93,8 +96,10 @@ const Field = forwardRef(
       error,
       helpText,
       containerClassName,
+      inputGroupClassName,
       labelClassName,
       label,
+      markRequired,
       prepend,
       append,
       render,
@@ -186,7 +191,7 @@ const Field = forwardRef(
 
     if (prepend || append) {
       component = (
-        <div className="input-group">
+        <div className={clsx("input-group", inputGroupClassName)}>
           {prepend && (
             <div className="input-group-prepend">
               <div className="input-group-text">{prepend}</div>
@@ -212,11 +217,19 @@ const Field = forwardRef(
           render ? customClassName : ""
         )}
       >
-        {label && (
-          <label htmlFor={fieldId} className={clsx(labelClassName)}>
-            {label}
-          </label>
-        )}
+        <div className="d-flex flex-row justify-content-between">
+          {label && (
+            <label htmlFor={fieldId} className={clsx(labelClassName)}>
+              {label}
+              {markRequired && <span className="text-danger ml-1">*</span>}
+            </label>
+          )}
+          {otherProps.currentLength !== undefined && otherProps.maxLength ? (
+            <div className="font-weight-light">
+              <small>{`${otherProps.currentLength} / ${otherProps.maxLength}`}</small>
+            </div>
+          ) : null}
+        </div>
         {component}
         {error && <div className="form-text text-danger">{error}</div>}
         {helpText && <small className="form-text text-muted">{helpText}</small>}

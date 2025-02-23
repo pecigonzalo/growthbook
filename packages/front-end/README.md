@@ -21,7 +21,7 @@ If a page or component relies on data from the API, it can use the `useApi` hook
 This uses swr under the hood and will automatically take care of caching and refreshing.
 
 ```tsx
-import useApi from "../hooks/useApi";
+import useApi from "@/hooks/useApi";
 
 function MyComponent({ id }) {
   // Describe the shape of the returned data with Typescript types
@@ -51,6 +51,26 @@ function MyComponent({ id }) {
 
 The `useApi` hook also returns a `mutate` function that can be called to force a refresh from the server.
 
+This hook takes an optional 2nd options argument to configure the behavior. Below are all of the possible options with descriptions
+
+```js
+useApi(`/people`, {
+  // If this returns false, the API call will not be made
+  // Useful for dependencies between API calls
+  // Defaults to always return true
+  shouldRun: () => isReady,
+  // If false, the API call will never refresh automatically
+  // You can still call `mutate` to manually refresh
+  // Defaults to true
+  autoRevalidate: false,
+  // Set to false if your API call does not depend on the current org
+  // For example: changing a user's password
+  // You should almost never need to change this
+  // Defaults to true
+  orgScoped: true,
+});
+```
+
 ### apiCall
 
 Use `apiCall` to make an authenticated call to the API in response to a user action - for example, clicking a submit button on a form. It is a simple wrapper around `window.fetch` that adds authentication and content-type headers and parses responses.
@@ -58,7 +78,7 @@ Use `apiCall` to make an authenticated call to the API in response to a user act
 If your API call returns a status other than `200`, it will throw an error that you can catch.
 
 ```tsx
-import { useAuth } from "../services/auth";
+import { useAuth } from "@/services/auth";
 
 function MyComponent() {
   const { apiCall } = useAuth();
@@ -96,7 +116,7 @@ Basic usage:
 
 ```tsx
 import { useForm } from "react-hook-form";
-import Field from "../components/Forms/Field";
+import Field from "@/components/Forms/Field";
 
 function MyComponent() {
   const form = useForm({
@@ -134,28 +154,29 @@ Any normal HTML props can be passed as well and will be passed onto the underlyi
 
 ### Select Dropdowns
 
-Select dropdowns have 2 additional props:
+Use the `SelectField` component to render a dropdown.
 
-- **options** (required)
-- **initialOption** (optional, string)
+It has many of the same properties as `Field`, but there are 2 main differences:
 
-The `options` prop can be an array of strings, an array of `{value: "...", display: "..."}` objects, or an object mapping (e.g. `{fname: "First Name", lname: "Last Name"}`). Use the `initialOption` prop if you want to add a blank option to the top of the list (e.g. `Choose one...`).
+1. Must pass in `options`
+2. Cannot use `form.register`. Instead specify a `value` and `setValue` prop.
 
-Examples:
+Example:
 
 ```tsx
-<Field initialOption="Pick One" options={["one", "two"]}/>
-
-<Field options={[
-  {value: "1", display: "One"},
-  {value: "2", display: "Two"},
-]}/>
-
-<Field options={{
-  "1": "One",
-  "2": "Two",
-}}/>
+<SelectField
+  options={[
+    {value: "1", label: "One"},
+    {value: "2", label: "Two"}
+  ]}
+  value={form.watch("myField")}
+  setValue={(val) => form.setValue("myField", val)}
+>
 ```
+
+There is also a `MultiSelectField` component where the value is an array of strings instead of a single string.
+
+Both `SelectField` and `MultiSelectField` have a `createable` prop that makes it act more like an auto-complete field than a true dropdown.
 
 ### Textareas
 
@@ -184,7 +205,7 @@ There is also a `render` prop for completely custom inputs.
 />
 ```
 
-## Searching and Sorting
+## Searching, Sorting, and Pagination
 
 Whenever we show a list of items, we typically render a table and provide searching and sorting functionality.
 
@@ -197,11 +218,12 @@ The `useSearch` hook makes this process much simpler and removes a lot of boiler
 const features: FeatureInterface[];
 
 // Filter by search term and sort results
-const { items, searchInputProps, SortableTH } = useSearch({
+const { items, searchInputProps, SortableTH, pagination } = useSearch({
   items: features,
   localStorageKey: "features",
   searchFields: ["id", "description"],
   defaultSortField: "id",
+  pageSize: 20,
 });
 
 // Render the UI
@@ -228,6 +250,7 @@ return (
         ))}
       </tbody>
     </table>
+    {pagination}
   </div>
 );
 ```
@@ -371,71 +394,51 @@ return (
 );
 ```
 
+### Pagination
+
+By default, pagination is disabled. Specify a `pageSize` in the `useSearch` hook to enable it.
+
+There are also 3 return properties from the hook:
+
+- `pagination` - Make sure to render this right after your table
+- `page` - The current page
+- `resetPage` - A callback you can call to reset to page 1
+
+Note: Pagination is done client-side and does not reduce the memory consumption or network usage. It can however reduce CPU by limiting the number of components rendered to the screen.
+
 ### Custom search syntax (advanced)
 
 Sometimes we want to add support for custom syntax to the search box. For example, on the features page, we allow searching by toggled environment (e.g. `on:dev`).
 
-This is handled by the `transformQuery` parameter in the `useSearch` hook, which lets you modify the search term before it's processed by our search engine. Then, you can use `filterResults` to apply your custom logic.
+This is handled by the `searchTermFilters` parameter in the `useSearch` hook, which lets you define custom filters. This is run before `filterResults` (if specified).
 
 Here's a simplified example:
 
 ```ts
-const regex = /(\s|^)on:([^s]*)/g;
-
-// Remove the "on:..." part from the search term
-const transformQuery = useCallback((q: string) => q.replace(regex, ""), []);
-
-// Get the filtered environment from the original search term and apply it if found
-const filterResults = useCallback(
-  (results: FeatureInterface[], originalQuery: string) => {
-    const env = originalQuery.match(regex)?.[2];
-    if (env) {
-      results = results.filter((feature) => isEnvEnabled(feature, env));
-    }
-    return results;
-  },
-  []
-);
-
 useSearch({
   items: features,
   localStorageKey: "features",
   searchFields: ["id", "description"],
   defaultSortField: "id",
-  transformQuery,
-  filterResults,
+  searchTermFilters: {
+    version: (feature) => feature.version,
+    type: (feature) => feature.valueType,
+    created: (feature) => feature.dateCreated,
+    on: (feature) => {
+      // Build a list of all environments where this feature is on
+      const on: string[] = [];
+      environments.forEach((e) => {
+        if (isEnvEnabled(feature, e)) on.push(e);
+      });
+      return on;
+    },
+  },
 });
 ```
 
-## Storybook
+Now, the following queries will work as expected:
 
-The project uses [Storybook](https://storybook.js.org/) to help with the development of presentational components.
-
-To run the server at http://localhost:6006 you can execute the following command:
-
-    yarn storybook
-
-When creating a new component, it is recommended to create a directory for it with the same name, and in that directory include both the component and the stories file. Here's an example:
-
-```
-packages/front-end/components/DeleteButton
-├── DeleteButton.stories.tsx
-└── DeleteButton.tsx
-
-0 directories, 2 files
-```
-
-A story must include a default export with a `title` and the component as `component`, as well as named exports of examples. Here's an example.
-
-```tsx
-export default {
-  component: MyComponent,
-  title: "MyComponent",
-};
-
-export const Default = () => {
-  return <MyComponent />;
-};
-```
-
-See files with suffix `.stories.tsx` for real examples that include how to implement a variety of helpful add-ons (e.g. actions, knobs, etc.)
+- `on:production` - search for a match in an array of strings
+- `type:^bool` - prefix match (actual type is "boolean")
+- `version:>2 version:<10 version:!5` - supports numbers and modifiers
+- `created:2024-01` - ISO date support with prefix matching by default

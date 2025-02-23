@@ -4,6 +4,8 @@ import {
   ButtonHTMLAttributes,
   DetailedHTMLProps,
   ReactNode,
+  CSSProperties,
+  useEffect,
 } from "react";
 import clsx from "clsx";
 import LoadingSpinner from "./LoadingSpinner";
@@ -14,10 +16,17 @@ interface Props
     HTMLButtonElement
   > {
   color?: string;
-  onClick: () => Promise<void>;
+  onClick: (() => Promise<void>) | (() => void);
   disabled?: boolean;
   description?: string;
   children: ReactNode;
+  loading?: boolean;
+  loadingClassName?: string;
+  stopPropagation?: boolean;
+  loadingCta?: string;
+  errorClassName?: string;
+  errorStyle?: CSSProperties;
+  setErrorText?: (s: string) => void;
 }
 
 const Button: FC<Props> = ({
@@ -27,25 +36,40 @@ const Button: FC<Props> = ({
   description,
   className,
   disabled,
+  loading: _externalLoading,
+  loadingClassName = "btn-secondary disabled",
+  stopPropagation,
+  loadingCta = "Loading",
+  errorClassName = "text-danger ml-2",
+  errorStyle,
+  setErrorText,
   ...otherProps
 }) => {
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(false);
+  const [_internalLoading, setLoading] = useState(false);
+  const [error, setError] = useState<string>("");
+  const loading = _externalLoading || _internalLoading;
+
+  useEffect(() => {
+    if (setErrorText) {
+      setErrorText(error);
+    }
+  }, [setErrorText, error]);
 
   return (
     <>
       <button
         {...otherProps}
         className={clsx("btn", className, {
-          "btn-secondary disabled": loading,
+          [loadingClassName]: loading,
           [`btn-${color}`]: !loading,
         })}
         disabled={disabled || loading}
         onClick={async (e) => {
           e.preventDefault();
+          if (stopPropagation) e.stopPropagation();
           if (loading) return;
           setLoading(true);
-          setError(null);
+          setError("");
 
           try {
             await onClick();
@@ -58,20 +82,22 @@ const Button: FC<Props> = ({
       >
         {loading ? (
           <>
-            <LoadingSpinner /> Loading
+            <LoadingSpinner /> {loadingCta}
           </>
         ) : (
           children
         )}
       </button>
-      {error && <pre className="text-danger ml-2">{error}</pre>}
+      {error && !setErrorText ? (
+        <pre className={errorClassName} style={errorStyle}>
+          {error}
+        </pre>
+      ) : null}
       {!error && !loading && description ? (
         <small>
           <em>{description}</em>
         </small>
-      ) : (
-        ""
-      )}
+      ) : null}
     </>
   );
 };

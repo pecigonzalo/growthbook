@@ -1,5 +1,13 @@
 name: CI
 on:
+  push:
+    branches: main
+    paths:
+      - "packages/**"
+      - "yarn.lock"
+      - ".eslintrc"
+      - ".eslintignore"
+      - ".prettierignore"
   pull_request:
     paths:
       - "packages/**"
@@ -17,47 +25,71 @@ jobs:
         uses: actions/checkout@v2
 
       - name: Setup Node
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
-          node-version: '16'
-          cache: 'yarn'
+          node-version: "20"
+          cache: "yarn"
 
-      - name: Set up Python 3.8
+      - name: Set up Python 3.11
         uses: actions/setup-python@v2
         with:
-          python-version: 3.8
-          cache: 'pip'
+          python-version: 3.11
+          cache: "pip"
 
       - name: Cache eslint
-        uses: actions/cache@v2
+        uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.eslintcache
           key: ${{ runner.os }}-eslint-${{ hashFiles('**/yarn.lock') }}-${{ hashFiles('**/*.ts', '**/*.tsx') }}
           restore-keys: |
             ${{ runner.os }}-eslint-
-      
+
       - name: Install dependencies
         run: |
           # Main app
           yarn install
 
           # Stats engine
-          pip install numpy scipy pandas pytest black flake8 nbformat gbstats
+          pip install pipx
+          pipx install poetry
+        env:
+          CI: true
 
-      - name: Build, lint, type-check, and test 
+      - name: Build dependencies
         run: |
-          # Build SDK packages (required for linting/type checks to work)
-          yarn workspace @growthbook/growthbook build
-          yarn workspace @growthbook/growthbook-react build
+          # Build required dependencies (sdks/shared package)
+          # This is required for linting/type checks to work
+          yarn setup
+        env:
+          CI: true
 
-          # Linting
-          yarn lint
-          yarn workspace stats lint
+      - name: Lint
+        run: |
+          yarn lint:ci
+          yarn workspace stats lint:ci
+        env:
+          CI: true
 
-          # Typescript type checks
+      - name: Check api types
+        run: |
+          yarn generate-api-types
+          [[ -n $(git status --porcelain) ]] && echo "You need to run yarn generate-api-types" && git status --porcelain && exit 1 || true
+
+      - name: Check doc
+        run: |
+          cd docs
+          yarn
+          yarn gen
+          [[ -n $(git status --porcelain) ]] && echo "You need to run yarn gen-doc" && git status --porcelain && exit 1 || true
+
+      - name: Type-check
+        run: |
           yarn type-check
+        env:
+          CI: true
 
-          # Test suites
+      - name: Test
+        run: |
           yarn test
         env:
           CI: true

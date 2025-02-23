@@ -4,11 +4,13 @@ import {
   GlobalPermission,
   OrganizationInterface,
   ProjectScopedPermission,
-} from "../../types/organization";
-import { AuditInterface } from "../../types/audit";
-import { SSOConnectionInterface } from "../../types/sso-connection";
+} from "back-end/types/organization";
+import { AuditInterface } from "back-end/types/audit";
+import { SSOConnectionInterface } from "back-end/types/sso-connection";
+import { TeamInterface } from "back-end/types/team";
+import { UserInterface } from "back-end/types/user";
 
-interface PermissionFunctions {
+export type PermissionFunctions = {
   checkPermissions(permission: GlobalPermission): void;
   checkPermissions(
     permission: ProjectScopedPermission,
@@ -16,10 +18,10 @@ interface PermissionFunctions {
   ): void;
   checkPermissions(
     permission: EnvScopedPermission,
-    project: string | string[] | undefined,
+    project: string | (string | undefined)[] | undefined,
     envs: string[] | Set<string>
   ): void;
-}
+};
 
 // eslint-disable-next-line
 export type AuthRequest<
@@ -27,15 +29,22 @@ export type AuthRequest<
   Params = unknown,
   QueryParams = unknown
 > = Request<Params, unknown, Body, QueryParams> & {
+  currentUser: Pick<
+    UserInterface,
+    "email" | "id" | "name" | "verified" | "superAdmin"
+  >;
   email: string;
   verified?: boolean;
   userId?: string;
   loginMethod?: SSOConnectionInterface;
   authSubject?: string;
   name?: string;
-  admin?: boolean;
+  superAdmin?: boolean;
   organization?: OrganizationInterface;
-  audit: (data: Partial<AuditInterface>) => Promise<void>;
+  teams: TeamInterface[];
+  audit: (
+    data: Omit<AuditInterface, "organization" | "id" | "user" | "dateCreated">
+  ) => Promise<void>;
 } & PermissionFunctions;
 
 export type ResponseWithStatusAndError<T = unknown> = Response<

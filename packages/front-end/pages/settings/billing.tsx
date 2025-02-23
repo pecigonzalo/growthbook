@@ -1,33 +1,57 @@
-import Link from "next/link";
-import { FC, useState } from "react";
-import { FaAngleLeft } from "react-icons/fa";
-import LoadingOverlay from "@/components/LoadingOverlay";
+import { FC, useEffect, useState } from "react";
+import { LicenseInterface } from "enterprise";
 import SubscriptionInfo from "@/components/Settings/SubscriptionInfo";
-import { isCloud } from "@/services/env";
 import UpgradeModal from "@/components/Settings/UpgradeModal";
-import useStripeSubscription from "@/hooks/useStripeSubscription";
-import usePermissions from "@/hooks/usePermissions";
+import { useUser } from "@/services/UserContext";
+import { useAuth } from "@/services/auth";
+import usePermissionsUtil from "@/hooks/usePermissionsUtils";
 
 const BillingPage: FC = () => {
   const [upgradeModal, setUpgradeModal] = useState(false);
 
-  const { canSubscribe, subscriptionStatus, loading } = useStripeSubscription();
+  const permissionsUtil = usePermissionsUtil();
 
-  const permissions = usePermissions();
+  const { accountPlan, subscription, canSubscribe } = useUser();
 
-  if (!isCloud()) {
+  const { apiCall } = useAuth();
+  const { refreshOrganization } = useUser();
+
+  useEffect(() => {
+    const refreshLicense = async () => {
+      const res = await apiCall<{
+        status: number;
+        license: LicenseInterface;
+      }>(`/license`, {
+        method: "GET",
+      });
+
+      if (res.status !== 200) {
+        throw new Error("There was an error fetching the license");
+      }
+      refreshOrganization();
+    };
+
+    if (typeof window !== "undefined") {
+      const urlParams = new URLSearchParams(window.location.search);
+      // TODO: Get rid of the "org" route, once all license data has been moved off the orgs
+      if (urlParams.get("refreshLicense") || urlParams.get("org")) {
+        refreshLicense();
+      }
+    }
+  }, [apiCall, refreshOrganization]);
+
+  if (accountPlan === "enterprise") {
     return (
-      <div className="alert alert-info">
-        This page is not available for self-hosted installations.
+      <div className="container pagecontents">
+        <div className="alert alert-info">
+          This page is not available for enterprise customers. Please contact
+          your account rep for any billing questions or changes.
+        </div>
       </div>
     );
   }
 
-  if (loading) {
-    return <LoadingOverlay />;
-  }
-
-  if (!permissions.manageBilling) {
+  if (!permissionsUtil.canManageBilling()) {
     return (
       <div className="container pagecontents">
         <div className="alert alert-danger">
@@ -47,16 +71,9 @@ const BillingPage: FC = () => {
         />
       )}
 
-      <div className="mb-2">
-        <Link href="/settings">
-          <a>
-            <FaAngleLeft /> All Settings
-          </a>
-        </Link>
-      </div>
       <h1>Billing Settings</h1>
-      <div className=" bg-white p-3 border">
-        {subscriptionStatus ? (
+      <div className="appbox p-3 border">
+        {subscription?.status ? (
           <SubscriptionInfo />
         ) : canSubscribe ? (
           <div className="alert alert-warning mb-0">

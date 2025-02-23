@@ -1,25 +1,28 @@
 import type { Response } from "express";
-import uniqid from "uniqid";
-import cloneDeep from "lodash/cloneDeep";
 import { FilterQuery } from "mongoose";
-import { AuthRequest } from "../../types/AuthRequest";
-import { ApiErrorResponse } from "../../../types/api";
-import { getOrgFromReq } from "../../services/organizations";
-import { SegmentDocument, SegmentModel } from "../../models/SegmentModel";
-import { getDataSourceById } from "../../models/DataSourceModel";
-import { getIdeasByQuery } from "../../services/ideas";
-import { IdeaDocument, IdeaModel } from "../../models/IdeasModel";
+import { z } from "zod";
+import { EventUserForResponseLocals } from "back-end/src/events/event-types";
+import { AuthRequest } from "back-end/src/types/AuthRequest";
+import { ApiErrorResponse } from "back-end/types/api";
+import { getContextFromReq } from "back-end/src/services/organizations";
+import { getDataSourceById } from "back-end/src/models/DataSourceModel";
+import { getIdeasByQuery } from "back-end/src/services/ideas";
+import { IdeaDocument, IdeaModel } from "back-end/src/models/IdeasModel";
 import {
   getMetricsUsingSegment,
-  updateMetricsByQuery,
-} from "../../models/MetricModel";
+  removeSegmentFromAllMetrics,
+} from "back-end/src/models/MetricModel";
 import {
   deleteExperimentSegment,
   getExperimentsUsingSegment,
-  logExperimentUpdated,
-} from "../../models/ExperimentModel";
-import { MetricInterface } from "../../../types/metric";
-import { ExperimentInterface } from "../../../types/experiment";
+} from "back-end/src/models/ExperimentModel";
+import { MetricInterface } from "back-end/types/metric";
+import { SegmentInterface } from "back-end/types/segment";
+import { ExperimentInterface } from "back-end/types/experiment";
+import {
+  createSegmentValidator,
+  updateSegmentValidator,
+} from "./segment.validators";
 
 // region GET /segments
 
@@ -27,7 +30,7 @@ type GetSegmentsRequest = AuthRequest;
 
 type GetSegmentsResponse = {
   status: 200;
-  segments: SegmentDocument[];
+  segments: SegmentInterface[];
 };
 
 /**
@@ -38,12 +41,10 @@ type GetSegmentsResponse = {
  */
 export const getSegments = async (
   req: GetSegmentsRequest,
-  res: Response<GetSegmentsResponse>
+  res: Response<GetSegmentsResponse, EventUserForResponseLocals>
 ) => {
-  const { org } = getOrgFromReq(req);
-  const segments = await SegmentModel.find({
-    organization: org.id,
-  });
+  const context = getContextFromReq(req);
+  const segments = await context.models.segments.getAll();
   res.status(200).json({
     status: 200,
     segments,
@@ -76,22 +77,17 @@ type GetSegmentUsageResponse = {
  */
 export const getSegmentUsage = async (
   req: GetSegmentUsageRequest,
-  res: Response<GetSegmentUsageResponse>
+  res: Response<GetSegmentUsageResponse, EventUserForResponseLocals>
 ) => {
   const { id } = req.params;
-  const { org } = getOrgFromReq(req);
+  const context = getContextFromReq(req);
+  const { org } = context;
 
-  const segment = await SegmentModel.findOne({
-    id,
-    organization: org.id,
-  });
+  const segment = await context.models.segments.getById(id);
 
   if (!segment) {
     throw new Error("Could not find segment");
   }
-
-  // segments are used in a few places:
-  // ideas (impact estimate)
   const query: FilterQuery<IdeaDocument> = {
     organization: org.id,
     "estimateParams.segment": id,
@@ -99,10 +95,10 @@ export const getSegmentUsage = async (
   const ideas = await getIdeasByQuery(query);
 
   // metricSchema
-  const metrics = await getMetricsUsingSegment(id, org.id);
+  const metrics = await getMetricsUsingSegment(context, id);
 
   // experiments:
-  const experiments = await getExperimentsUsingSegment(id, org.id);
+  const experiments = await getExperimentsUsingSegment(context, id);
 
   res.status(200).json({
     ideas,
@@ -117,16 +113,11 @@ export const getSegmentUsage = async (
 
 // region POST /segments
 
-type CreateSegmentRequest = AuthRequest<{
-  datasource: string;
-  userIdType: string;
-  name: string;
-  sql: string;
-}>;
+type CreateSegmentRequest = AuthRequest<z.infer<typeof createSegmentValidator>>;
 
 type CreateSegmentResponse = {
   status: 200;
-  segment: SegmentDocument;
+  segment: SegmentInterface;
 };
 
 /**
@@ -137,30 +128,57 @@ type CreateSegmentResponse = {
  */
 export const postSegment = async (
   req: CreateSegmentRequest,
-  res: Response<CreateSegmentResponse | ApiErrorResponse>
+  res: Response<
+    CreateSegmentResponse | ApiErrorResponse,
+    EventUserForResponseLocals
+  >
 ) => {
-  req.checkPermissions("createSegments");
+  const {
+    datasource,
+    name,
+    sql,
+    userIdType,
+    description,
+    owner,
+    factTableId,
+    filters,
+    type,
+    projects,
+  } = req.body;
 
-  const { datasource, name, sql, userIdType } = req.body;
+  const context = getContextFromReq(req);
+  if (!context.permissions.canCreateSegment({ projects })) {
+    context.permissions.throwPermissionError();
+  }
 
-  const { org, userName } = getOrgFromReq(req);
-
-  const datasourceDoc = await getDataSourceById(datasource, org.id);
+  const datasourceDoc = await getDataSourceById(context, datasource);
   if (!datasourceDoc) {
     throw new Error("Invalid data source");
   }
 
-  const doc = await SegmentModel.create({
-    owner: userName,
+  const baseSegment: Omit<
+    SegmentInterface,
+    "id" | "organization" | "dateCreated" | "dateUpdated"
+  > = {
+    owner: owner || "",
     datasource,
     userIdType,
     name,
-    sql,
-    id: uniqid("seg_"),
-    dateCreated: new Date(),
-    dateUpdated: new Date(),
-    organization: org.id,
-  });
+    description,
+    type,
+    projects,
+  };
+
+  if (type === "SQL") {
+    // if SQL type, set only sql field
+    baseSegment.sql = sql;
+  } else {
+    // if FACT type, only set factTableId and filters
+    baseSegment.factTableId = factTableId;
+    baseSegment.filters = filters;
+  }
+
+  const doc = await context.models.segments.create(baseSegment);
 
   res.status(200).json({
     status: 200,
@@ -173,19 +191,12 @@ export const postSegment = async (
 // region PUT /segments/:id
 
 type PutSegmentRequest = AuthRequest<
-  {
-    datasource: string;
-    userIdType: string;
-    name: string;
-    sql: string;
-    owner: string;
-  },
+  z.infer<typeof updateSegmentValidator>,
   { id: string }
 >;
 
 type PutSegmentResponse = {
   status: 200;
-  segment: SegmentDocument;
 };
 
 /**
@@ -196,16 +207,16 @@ type PutSegmentResponse = {
  */
 export const putSegment = async (
   req: PutSegmentRequest,
-  res: Response<PutSegmentResponse | ApiErrorResponse>
+  res: Response<
+    PutSegmentResponse | ApiErrorResponse,
+    EventUserForResponseLocals
+  >
 ) => {
-  req.checkPermissions("createSegments");
-
   const { id } = req.params;
-  const segment = await SegmentModel.findOne({
-    id,
-  });
+  const context = getContextFromReq(req);
+  const { org } = context;
 
-  const { org } = getOrgFromReq(req);
+  const segment = await context.models.segments.getById(id);
 
   if (!segment) {
     throw new Error("Could not find segment");
@@ -214,25 +225,43 @@ export const putSegment = async (
     throw new Error("You don't have access to that segment");
   }
 
-  const { datasource, name, sql, userIdType, owner } = req.body;
+  const {
+    datasource,
+    name,
+    sql,
+    userIdType,
+    description,
+    owner,
+    factTableId,
+    filters,
+    type,
+    projects,
+  } = req.body;
 
-  const datasourceDoc = await getDataSourceById(datasource, org.id);
+  if (!context.permissions.canUpdateSegment(segment, { projects })) {
+    context.permissions.throwPermissionError();
+  }
+
+  const datasourceDoc = await getDataSourceById(context, datasource);
   if (!datasourceDoc) {
     throw new Error("Invalid data source");
   }
 
-  segment.set("datasource", datasource);
-  segment.set("userIdType", userIdType);
-  segment.set("name", name);
-  segment.set("owner", owner);
-  segment.set("sql", sql);
-  segment.set("dateUpdated", new Date());
-
-  await segment.save();
+  await context.models.segments.updateById(id, {
+    owner: owner,
+    datasource,
+    userIdType,
+    name,
+    sql,
+    description,
+    type,
+    factTableId,
+    filters,
+    projects,
+  });
 
   res.status(200).json({
     status: 200,
-    segment,
   });
 };
 
@@ -254,25 +283,22 @@ type DeleteSegmentResponse = {
  */
 export const deleteSegment = async (
   req: DeleteSegmentRequest,
-  res: Response<DeleteSegmentResponse>
+  res: Response<DeleteSegmentResponse, EventUserForResponseLocals>
 ) => {
-  req.checkPermissions("createSegments");
-
   const { id } = req.params;
-  const { org } = getOrgFromReq(req);
-  const segment = await SegmentModel.findOne({
-    id,
-    organization: org.id,
-  });
+  const context = getContextFromReq(req);
+
+  const { org } = context;
+  const segment = await context.models.segments.getById(id);
 
   if (!segment) {
     throw new Error("Could not find segment");
   }
+  if (!context.permissions.canDeleteSegment(segment)) {
+    context.permissions.throwPermissionError();
+  }
 
-  await SegmentModel.deleteOne({
-    id,
-    organization: org.id,
-  });
+  await context.models.segments.delete(segment);
 
   // delete references:
   // ideas:
@@ -290,31 +316,9 @@ export const deleteSegment = async (
   }
 
   // metrics
-  const metrics = await getMetricsUsingSegment(id, org.id);
-  if (metrics.length > 0) {
-    // as update metric query will fail if they are using a config file,
-    // we want to allow for deleting if there are no metrics with this segment.
-    await updateMetricsByQuery(
-      { organization: org.id, segment: id },
-      { segment: "" }
-    );
-  }
+  await removeSegmentFromAllMetrics(org.id, id);
 
-  const exps = await getExperimentsUsingSegment(id, org.id);
-  if (exps.length > 0) {
-    await deleteExperimentSegment(org.id, id);
-
-    exps.forEach((previous) => {
-      const current = cloneDeep(previous);
-      current.segment = "";
-
-      logExperimentUpdated({
-        organization: org,
-        previous,
-        current,
-      });
-    });
-  }
+  await deleteExperimentSegment(context, id);
 
   res.status(200).json({
     status: 200,

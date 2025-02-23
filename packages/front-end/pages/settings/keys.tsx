@@ -1,12 +1,13 @@
-import Link from "next/link";
 import { FC } from "react";
-import { FaAngleLeft } from "react-icons/fa";
 import ApiKeys from "@/components/Settings/ApiKeys";
-import usePermissions from "@/hooks/usePermissions";
+import usePermissionsUtil from "@/hooks/usePermissionsUtils";
 
 const ApiKeysPage: FC = () => {
-  const permissions = usePermissions();
-  if (!permissions.manageApiKeys) {
+  const permissionsUtils = usePermissionsUtil();
+  if (
+    !permissionsUtils.canCreateApiKey() &&
+    !permissionsUtils.canDeleteApiKey()
+  ) {
     return (
       <div className="container pagecontents">
         <div className="alert alert-danger">
@@ -18,13 +19,6 @@ const ApiKeysPage: FC = () => {
 
   return (
     <div className="container-fluid pagecontents">
-      <div className="mb-2">
-        <Link href="/settings">
-          <a>
-            <FaAngleLeft /> All Settings
-          </a>
-        </Link>
-      </div>
       <ApiKeys />
     </div>
   );

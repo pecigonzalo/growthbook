@@ -1,14 +1,15 @@
 import mysql, { RowDataPacket } from "mysql2/promise";
 import { ConnectionOptions } from "mysql2";
-import { MysqlConnectionParams } from "../../types/integrations/mysql";
-import { decryptDataSourceParams } from "../services/datasource";
-import { FormatDialect } from "../util/sql";
+import { MysqlConnectionParams } from "back-end/types/integrations/mysql";
+import { decryptDataSourceParams } from "back-end/src/services/datasource";
+import { FormatDialect } from "back-end/src/util/sql";
+import { QueryResponse } from "back-end/src/types/Integration";
 import SqlIntegration from "./SqlIntegration";
 
 export default class Mysql extends SqlIntegration {
-  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-  // @ts-ignore
-  params: MysqlConnectionParams;
+  params!: MysqlConnectionParams;
+  requiresDatabase = false;
+  requiresSchema = false;
   setParams(encryptedParams: string) {
     this.params = decryptDataSourceParams<MysqlConnectionParams>(
       encryptedParams
@@ -20,7 +21,7 @@ export default class Mysql extends SqlIntegration {
   getSensitiveParamKeys(): string[] {
     return ["password"];
   }
-  async runQuery(sql: string) {
+  async runQuery(sql: string): Promise<QueryResponse> {
     const config: ConnectionOptions = {
       host: this.params.host,
       port: this.params.port,
@@ -38,16 +39,10 @@ export default class Mysql extends SqlIntegration {
     const conn = await mysql.createConnection(config);
 
     const [rows] = await conn.query(sql);
-    return rows as RowDataPacket[];
+    return { rows: rows as RowDataPacket[] };
   }
   dateDiff(startCol: string, endCol: string) {
     return `DATEDIFF(${endCol}, ${startCol})`;
-  }
-  covariance(y: string, x: string): string {
-    return `(SUM(${x}*${y})-SUM(${x})*SUM(${y})/COUNT(*))/(COUNT(*)-1)`;
-  }
-  stddev(col: string) {
-    return `STDDEV_SAMP(${col})`;
   }
   addTime(
     col: string,
@@ -65,10 +60,61 @@ export default class Mysql extends SqlIntegration {
   formatDate(col: string): string {
     return `DATE_FORMAT(${col}, "%Y-%m-%d")`;
   }
+  formatDateTimeString(col: string): string {
+    return `DATE_FORMAT(${col}, "%Y-%m-%d %H:%i:%S")`;
+  }
   castToString(col: string): string {
     return `cast(${col} as char)`;
   }
   ensureFloat(col: string): string {
     return `CAST(${col} AS DOUBLE)`;
+  }
+  percentileCapSelectClause(
+    values: {
+      valueCol: string;
+      outputCol: string;
+      percentile: number;
+      ignoreZeros: boolean;
+    }[],
+    metricTable: string,
+    where: string = ""
+  ): string {
+    if (values.length > 1) {
+      throw new Error(
+        "MySQL only supports one percentile capped metric at a time"
+      );
+    }
+
+    let whereClause = where;
+    if (values[0].ignoreZeros) {
+      whereClause = whereClause
+        ? `${whereClause} AND ${values[0].valueCol} != 0`
+        : `WHERE ${values[0].valueCol} != 0`;
+    }
+
+    return `
+    SELECT DISTINCT FIRST_VALUE(${values[0].valueCol}) OVER (
+      ORDER BY CASE WHEN p <= ${values[0].percentile} THEN p END DESC
+    ) AS ${values[0].outputCol}
+    FROM (
+      SELECT
+        ${values[0].valueCol},
+        PERCENT_RANK() OVER (ORDER BY ${values[0].valueCol}) p
+      FROM ${metricTable}
+      ${whereClause}
+    ) t`;
+  }
+  hasQuantileTesting(): boolean {
+    return false;
+  }
+  hasEfficientPercentile(): boolean {
+    return false;
+  }
+  getInformationSchemaWhereClause(): string {
+    if (!this.params.database)
+      throw new Error(
+        `No database name provided in MySql connection. Please add a database by editing the connection settings.`
+      );
+    return `table_schema IN ('${this.params.database}')`;
   }
 }

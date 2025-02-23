@@ -1,14 +1,14 @@
 import mongoose from "mongoose";
-import { SSOConnectionInterface } from "../../types/sso-connection";
+import { SSOConnectionInterface } from "back-end/types/sso-connection";
 
 const ssoConnectionSchema = new mongoose.Schema({
   id: {
     type: String,
     unique: true,
   },
-  emailDomain: {
-    type: String,
-    unique: true,
+  emailDomains: {
+    type: [String],
+    index: true,
   },
   organization: {
     type: String,
@@ -25,10 +25,14 @@ const ssoConnectionSchema = new mongoose.Schema({
 
 type SSOConnectionDocument = mongoose.Document & SSOConnectionInterface;
 
-const SSOConnectionModel = mongoose.model<SSOConnectionDocument>(
+const SSOConnectionModel = mongoose.model<SSOConnectionInterface>(
   "SSOConnection",
   ssoConnectionSchema
 );
+
+function toInterface(doc: SSOConnectionDocument): SSOConnectionInterface {
+  return doc.toJSON();
+}
 
 export async function getSSOConnectionById(
   id: string
@@ -36,16 +40,25 @@ export async function getSSOConnectionById(
   if (!id) return null;
   const doc = await SSOConnectionModel.findOne({ id });
 
-  return doc ? doc.toJSON() : null;
+  return doc ? toInterface(doc) : null;
+}
+
+export async function getAllSSOConnections(): Promise<
+  SSOConnectionInterface[]
+> {
+  const connections = await SSOConnectionModel.find();
+  return connections.map((c) => toInterface(c));
 }
 
 export async function getSSOConnectionByEmailDomain(
   emailDomain: string
 ): Promise<null | SSOConnectionInterface> {
   if (!emailDomain) return null;
-  const doc = await SSOConnectionModel.findOne({ emailDomain });
+  const doc = await SSOConnectionModel.findOne({
+    emailDomains: emailDomain,
+  });
 
-  return doc ? doc.toJSON() : null;
+  return doc ? toInterface(doc) : null;
 }
 
 export function getSSOConnectionSummary(
@@ -55,7 +68,7 @@ export function getSSOConnectionSummary(
     return null;
   }
   return {
-    emailDomain: conn.emailDomain,
+    emailDomains: conn.emailDomains,
     idpType: conn.idpType,
     clientId: conn.clientId,
     clientSecret: conn.clientSecret ? "********" : undefined,

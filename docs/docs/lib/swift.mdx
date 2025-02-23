@@ -5,6 +5,8 @@ sidebar_label: Swift (iOS)
 slug: swift
 ---
 
+import SdkResources from '@site/src/components/SdkResources';
+
 # Swift (iOS)
 
 This SDK supports the following platforms and versions:
@@ -12,6 +14,8 @@ This SDK supports the following platforms and versions:
 - iOS 12 and above
 - Apple TvOS 12 and above
 - Apple WatchOS 5.0 and above
+
+<SdkResources sdk="swift" />
 
 ## Installation
 
@@ -86,7 +90,7 @@ If you pass a `url` into GrowthBookBuilder, it will handle the network requests,
 var gb: GrowthBookSDK = GrowthBookBuilder(
   // Your feature flag endpoint
   url: "https://cdn.growthbook.io/api/features/sdk-abc123",
-  // View your encryption key on the Features -> SDKs page
+  // View your encryption key on the Features → SDKs page
   encryptionKey: "abcdef98765"
 ).initializer()
 ```

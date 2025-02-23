@@ -1,34 +1,38 @@
-import { z } from "zod";
+import { ListSdkConnectionsResponse } from "back-end/types/openapi";
 import {
-  ApiPaginationFields,
-  ApiSDKConnectionInterface,
-} from "../../../types/api";
-import {
+  findAllSDKConnectionsAcrossAllOrgs,
   findSDKConnectionsByOrganization,
   toApiSDKConnectionInterface,
-} from "../../models/SdkConnectionModel";
-import { applyPagination, createApiRequestHandler } from "../../util/handler";
+} from "back-end/src/models/SdkConnectionModel";
+import {
+  applyFilter,
+  applyPagination,
+  createApiRequestHandler,
+  validateIsSuperUserRequest,
+} from "back-end/src/util/handler";
+import { listSdkConnectionsValidator } from "back-end/src/validators/openapi";
+import { SDKConnectionInterface } from "back-end/types/sdk-connection";
 
-export const listSDKConnections = createApiRequestHandler({
-  querySchema: z
-    .object({
-      limit: z.string().optional(),
-      offset: z.string().optional(),
-      withProxy: z.string().optional(),
-    })
-    .strict(),
-})(
-  async (
-    req
-  ): Promise<
-    ApiPaginationFields & { connections: ApiSDKConnectionInterface[] }
-  > => {
-    const connections = await findSDKConnectionsByOrganization(
-      req.organization.id
-    );
+export const listSdkConnections = createApiRequestHandler(
+  listSdkConnectionsValidator
+)(
+  async (req): Promise<ListSdkConnectionsResponse> => {
+    let connections: SDKConnectionInterface[] = [];
+
+    if (req.query.multiOrg) {
+      await validateIsSuperUserRequest(req);
+      connections = await findAllSDKConnectionsAcrossAllOrgs();
+    } else {
+      connections = await findSDKConnectionsByOrganization(req.context);
+    }
 
     const { filtered, returnFields } = applyPagination(
       connections
+        .filter(
+          (c) =>
+            (!req.query.withProxy || c.proxy?.enabled) &&
+            applyFilter(req.query.projectId, c.projects, true)
+        )
         .filter((c) => {
           if (!req.query.withProxy) return true;
           return c.proxy?.enabled;

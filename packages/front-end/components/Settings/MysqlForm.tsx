@@ -81,6 +81,7 @@ const MysqlForm: FC<{
           onParamChange={onParamChange}
           setSSL={(ssl) => setParams({ ssl })}
           value={{
+            // @ts-expect-error TS(2322) If you come across this, please fix it!: Type 'boolean | undefined' is not assignable to ty... Remove this comment to see the full error message
             ssl: params.ssl,
             caCert: params.caCert,
             clientCert: params.clientCert,

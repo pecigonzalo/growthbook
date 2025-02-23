@@ -1,71 +1,210 @@
-import React from "react";
-import { ExperimentInterfaceStringDates } from "back-end/types/experiment";
-import { useFeature } from "@growthbook/growthbook-react";
-import LoadingOverlay from "../components/LoadingOverlay";
-import useApi from "../hooks/useApi";
-import { useFeaturesList } from "../services/features";
-import GetStarted from "../components/HomePage/GetStarted";
-import { useDefinitions } from "../services/DefinitionsContext";
-import usePermissions from "../hooks/usePermissions";
-import GuidedGetStarted from "../components/GuidedGetStarted/GuidedGetStarted";
+import { useState, useEffect } from "react";
+import {
+  Box,
+  Card,
+  Container,
+  Flex,
+  Grid,
+  Heading,
+  Separator,
+  Text,
+} from "@radix-ui/themes";
+import { PiArrowSquareOut } from "react-icons/pi";
+import UpgradeModal from "@/components/Settings/UpgradeModal";
+import { useGetStarted } from "@/services/GetStartedProvider";
+import usePermissionsUtil from "@/hooks/usePermissionsUtils";
+import { useDefinitions } from "@/services/DefinitionsContext";
+import {
+  AnalyzeExperimentFeatureCard,
+  ExperimentFeatureCard,
+  FeatureFlagFeatureCard,
+  LaunchDarklyImportFeatureCard,
+} from "@/components/GetStarted/FeaturedCards";
+import DocumentationSidebar from "@/components/GetStarted/DocumentationSidebar";
+import YouTubeLightBox from "@/components/GetStarted/YoutubeLightbox";
+import OverviewCard from "@/components/GetStarted/OverviewCard";
+import WorkspaceLinks from "@/components/GetStarted/WorkspaceLinks";
+import Callout from "@/components/Radix/Callout";
+import Link from "@/components/Radix/Link";
+import useSDKConnections from "@/hooks/useSDKConnections";
 
 const GetStartedPage = (): React.ReactElement => {
-  const permissions = usePermissions();
-  const guidedOnboarding = useFeature("guided-onboarding-test-august-2022").on;
+  const [showVideoId, setShowVideoId] = useState<string>("");
+  const [upgradeModal, setUpgradeModal] = useState<boolean>(false);
+  const { clearStep } = useGetStarted();
 
-  const { ready, error: definitionsError } = useDefinitions();
+  const permissionsUtils = usePermissionsUtil();
+  const { project } = useDefinitions();
 
-  const {
-    data: experiments,
-    error: experimentsError,
-    mutate: mutateExperiments,
-  } = useApi<{
-    experiments: ExperimentInterfaceStringDates[];
-  }>(`/experiments`);
+  const canUseSetupFlow =
+    permissionsUtils.canCreateSDKConnection({
+      projects: [project],
+      environment: "production",
+    }) &&
+    permissionsUtils.canCreateEnvironment({
+      projects: [project],
+      id: "production",
+    });
 
-  const { features, error: featuresError } = useFeaturesList();
+  const { data: sdkConnectionData } = useSDKConnections();
+  const showSetUpFlow =
+    canUseSetupFlow &&
+    sdkConnectionData &&
+    !sdkConnectionData.connections.some((c) => c.connected);
 
-  if (featuresError || experimentsError || definitionsError) {
-    return (
-      <div className="alert alert-danger">
-        An error occurred:{" "}
-        {featuresError?.message ||
-          experimentsError?.message ||
-          definitionsError}
-      </div>
-    );
-  }
+  // If they view the guide, clear the current step
+  useEffect(() => {
+    clearStep();
+  }, [clearStep]);
 
-  if (!experiments || !features || !ready) {
-    return <LoadingOverlay />;
-  }
+  // Also used for the `Launch Setup Flow` button to keep it aligned
+  const DOCUMENTATION_SIDEBAR_WIDTH = "minmax(0, 245px)";
 
-  if (permissions.organizationSettings && guidedOnboarding) {
-    return (
-      <>
-        <div className="container pagecontents position-relative">
-          <GuidedGetStarted
-            experiments={experiments?.experiments || []}
-            features={features}
-            mutate={mutateExperiments}
-          />
-        </div>
-      </>
-    );
-  } else {
-    return (
-      <>
-        <div className="container pagecontents position-relative">
-          <GetStarted
-            experiments={experiments?.experiments || []}
-            features={features}
-            mutateExperiments={mutateExperiments}
-            onboardingType={null}
-          />
-        </div>
-      </>
-    );
-  }
+  return (
+    <>
+      {upgradeModal && (
+        <UpgradeModal
+          close={() => setUpgradeModal(false)}
+          reason=""
+          source="get-started"
+        />
+      )}
+      {showVideoId && (
+        <YouTubeLightBox
+          close={() => setShowVideoId("")}
+          videoId={showVideoId}
+        />
+      )}
+
+      <Container
+        px={{ initial: "2", xs: "4", sm: "7" }}
+        py={{ initial: "1", xs: "3", sm: "6" }}
+      >
+        <Grid
+          columns={{
+            initial: "1fr 1fr",
+            xs: `1fr ${DOCUMENTATION_SIDEBAR_WIDTH}`,
+          }}
+          mt="2"
+          mb={{ initial: "4", xs: "6" }}
+          justify="between"
+          align="center"
+        >
+          <Heading as="h1" size="6" weight="medium" mb="0">
+            Get Started
+          </Heading>
+        </Grid>
+
+        <Grid
+          columns={{
+            initial: "1fr",
+            xs: `1fr ${DOCUMENTATION_SIDEBAR_WIDTH}`,
+          }}
+          gapX="4"
+          mb="6"
+        >
+          {showSetUpFlow && (
+            <Callout status="wizard" size="md">
+              Connect to your SDK to get started.{" "}
+              <Link
+                href="/setup"
+                className="font-weight-bold"
+                style={{ color: "inherit" }}
+              >
+                Launch the setup flow
+              </Link>{" "}
+              <PiArrowSquareOut />
+            </Callout>
+          )}
+        </Grid>
+
+        <Grid
+          columns={{
+            initial: "1fr",
+            xs: `1fr ${DOCUMENTATION_SIDEBAR_WIDTH}`,
+          }}
+          mb="3"
+          gapX="4"
+        >
+          <Box>
+            <Grid
+              gapX="4"
+              gapY="3"
+              columns={{ initial: "1fr", sm: "1fr 1fr" }}
+              rows="auto auto"
+            >
+              <FeatureFlagFeatureCard />
+              <ExperimentFeatureCard />
+              <LaunchDarklyImportFeatureCard />
+              <AnalyzeExperimentFeatureCard />
+            </Grid>
+
+            <Separator my="5" size="4" />
+
+            <Box mb="6">
+              <Box mb="3">
+                <Text size="1" weight="bold">
+                  PRODUCT OVERVIEW
+                </Text>
+              </Box>
+
+              <Flex direction={{ initial: "column", sm: "row" }} gap="4">
+                <OverviewCard
+                  imgUrl="/images/get-started/thumbnails/intro-to-growthbook.svg"
+                  hoverText="Launch Video Player"
+                  onClick={() => setShowVideoId("b4xUnDGRKRQ")}
+                  playTime={5}
+                  type="video"
+                />
+
+                <OverviewCard
+                  imgUrl="/images/get-started/thumbnails/quantile-metrics-blog.png"
+                  hoverText="View Blog Post"
+                  href="https://blog.growthbook.io/measuring-a-b-test-impacts-on-website-latency-using-quantile-metrics-in-growthbook/"
+                  type="link"
+                />
+
+                <OverviewCard
+                  imgUrl="/images/get-started/thumbnails/3.4-release.webp"
+                  hoverText="View Blog Post"
+                  href="https://blog.growthbook.io/growthbook-version-3-4/"
+                  type="link"
+                />
+              </Flex>
+            </Box>
+
+            <Box mb="6">
+              <Box mb="3">
+                <Text size="1" weight="bold">
+                  SET UP YOUR WORKSPACE
+                </Text>
+              </Box>
+
+              <Card>
+                <Grid columns={{ initial: "1fr", md: "1fr 1fr" }} pb="2">
+                  <WorkspaceLinks />
+                </Grid>
+              </Card>
+            </Box>
+
+            {/* <Text size="1">
+              Finished setting up?{" "}
+              <Link weight="bold" href="#" underline="none">
+                Turn off the guide to hide this page
+              </Link>
+            </Text> */}
+          </Box>
+
+          <Box>
+            <DocumentationSidebar
+              setUpgradeModal={setUpgradeModal}
+              type="get-started"
+            />
+          </Box>
+        </Grid>
+      </Container>
+    </>
+  );
 };
 
 export default GetStartedPage;

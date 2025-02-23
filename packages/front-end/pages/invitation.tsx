@@ -1,23 +1,28 @@
-import { MemberRole } from "back-end/types/organization";
-import { useCallback, useMemo } from "react";
-import Button from "../components/Button";
-import LoadingOverlay from "../components/LoadingOverlay";
-import useApi from "../hooks/useApi";
-import { useAuth, redirectWithTimeout } from "../services/auth";
+import { useCallback, useEffect, useMemo } from "react";
+import Button from "@/components/Button";
+import LoadingOverlay from "@/components/LoadingOverlay";
+import useApi from "@/hooks/useApi";
+import { useAuth, redirectWithTimeout } from "@/services/auth";
+import { trackPageView } from "@/services/track";
 
 const InvitationPage = (): React.ReactElement => {
   const { apiCall } = useAuth();
 
   // Extract the invitation key from the querystring
   const key = useMemo(
-    () => window?.location.search.match(/(^|&|\?)key=([a-zA-Z0-9]+)/)[2],
+    () => (window.location.search.match(/(^|&|\?)key=([a-zA-Z0-9]+)/) || [])[2],
     []
   );
+
+  // This page is before the user is part of an org, so need to manually fire a page load event
+  useEffect(() => {
+    trackPageView("/invitation");
+  }, []);
 
   // Get data about the invitation
   const { data, error: keyError } = useApi<{
     organization: string;
-    role: MemberRole;
+    role: string;
   }>(`/invite/${key}`);
 
   // Click handler for accept button

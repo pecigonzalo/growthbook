@@ -6,14 +6,12 @@ export interface ApiKeyInterface {
   description?: string;
   organization: string;
   dateCreated: Date;
+  userId?: string;
+  role?: string;
   encryptSDK?: boolean;
-  encryptionKey: string;
+  encryptionKey?: string;
   secret?: boolean;
 }
-
-export type PublishableApiKey = Omit<ApiKeyInterface, "secret"> & {
-  secret: false;
-};
 
 export type SecretApiKey = Omit<
   ApiKeyInterface,

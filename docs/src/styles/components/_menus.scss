@@ -61,18 +61,6 @@ html[data-theme="dark"] {
       padding-block-end: 0.5rem;
     }
 
-    .menu__list {
-      .menu__link--sublist {
-        margin-inline-start: calc(
-          -1 * (var(--dropdown-icon-width) + var(--dropdown-icon-gap))
-        );
-
-        &::after {
-          opacity: 0.6;
-        }
-      }
-    }
-
     &-item {
       &:not(:first-child) {
         margin-block-start: 0;
@@ -95,13 +83,18 @@ html[data-theme="dark"] {
         }
       }
 
-      &.pill-new {
-        .menu__link {
-          &::after {
-            content: "new";
-            @include pill(#13a100, #fff);
-          }
+      &.pill-new > .menu__link,
+      &.pill-new > div > .menu__link {
+        &::after {
+          content: "new";
+          @include pill(#13a100, #fff);
         }
+      }
+
+      &.top-divider {
+        border-top: 1px solid #cccccc80;
+        margin-top: 5px;
+        padding-top: 5px;
       }
     }
   }

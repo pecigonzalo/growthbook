@@ -1,27 +1,56 @@
-import React, { useEffect, useState } from "react";
-import { FaPencilAlt } from "react-icons/fa";
-import { useForm } from "react-hook-form";
-import { OrganizationSettings } from "back-end/types/organization";
-import isEqual from "lodash/isEqual";
 import cronstrue from "cronstrue";
+import React, { useEffect, useState } from "react";
+import { FormProvider, useForm, useFormContext } from "react-hook-form";
+import isEqual from "lodash/isEqual";
+import {
+  DEFAULT_P_VALUE_THRESHOLD,
+  DEFAULT_REGRESSION_ADJUSTMENT_DAYS,
+  DEFAULT_REGRESSION_ADJUSTMENT_ENABLED,
+  DEFAULT_SEQUENTIAL_TESTING_TUNING_PARAMETER,
+  DEFAULT_STATS_ENGINE,
+  DEFAULT_TEST_QUERY_DAYS,
+  DEFAULT_SRM_THRESHOLD,
+  DEFAULT_EXPERIMENT_MIN_LENGTH_DAYS,
+  DEFAULT_EXPERIMENT_MAX_LENGTH_DAYS,
+  DEFAULT_DECISION_FRAMEWORK_ENABLED,
+} from "shared/constants";
+import { OrganizationSettings } from "back-end/types/organization";
+import Link from "next/link";
+import { useGrowthBook } from "@growthbook/growthbook-react";
+import { Box, Flex, Heading } from "@radix-ui/themes";
 import { useAuth } from "@/services/auth";
-import EditOrganizationModal from "@/components/Settings/EditOrganizationModal";
-import VisualEditorInstructions from "@/components/Settings/VisualEditorInstructions";
-import track from "@/services/track";
-import BackupConfigYamlButton from "@/components/Settings/BackupConfigYamlButton";
-import RestoreConfigYamlButton from "@/components/Settings/RestoreConfigYamlButton";
 import { hasFileConfig, isCloud } from "@/services/env";
-import Field from "@/components/Forms/Field";
-import MetricsSelector from "@/components/Experiment/MetricsSelector";
 import TempMessage from "@/components/TempMessage";
-import Button from "@/components/Button";
-import { DocLink } from "@/components/DocLink";
-import { useOrganizationMetricDefaults } from "@/hooks/useOrganizationMetricDefaults";
+import Button from "@/components/Radix/Button";
+import {
+  OrganizationSettingsWithMetricDefaults,
+  useOrganizationMetricDefaults,
+} from "@/hooks/useOrganizationMetricDefaults";
 import { useUser } from "@/services/UserContext";
-import usePermissions from "@/hooks/usePermissions";
-import { GBPremiumBadge } from "@/components/Icons";
-import UpgradeModal from "@/components/Settings/UpgradeModal";
-import EditLicenseModal from "@/components/Settings/EditLicenseModal";
+import { useCurrency } from "@/hooks/useCurrency";
+import OrganizationAndLicenseSettings from "@/components/GeneralSettings/OrganizationAndLicenseSettings";
+import ImportSettings from "@/components/GeneralSettings/ImportSettings";
+import NorthStarMetricSettings from "@/components/GeneralSettings/NorthStarMetricSettings";
+import ExperimentSettings from "@/components/GeneralSettings/ExperimentSettings";
+import MetricsSettings from "@/components/GeneralSettings/MetricsSettings";
+import FeaturesSettings from "@/components/GeneralSettings/FeaturesSettings";
+import PremiumTooltip from "@/components/Marketing/PremiumTooltip";
+import DatasourceSettings from "@/components/GeneralSettings/DatasourceSettings";
+import BanditSettings from "@/components/GeneralSettings/BanditSettings";
+import HelperText from "@/components/Radix/HelperText";
+import { AppFeatures } from "@/types/app-features";
+import {
+  StickyTabsList,
+  Tabs,
+  TabsContent,
+  TabsTrigger,
+} from "@/components/Radix/Tabs";
+import Frame from "@/components/Radix/Frame";
+
+export const ConnectSettingsForm = ({ children }) => {
+  const methods = useFormContext();
+  return children({ ...methods });
+};
 
 function hasChanges(
   value: OrganizationSettings,
@@ -33,35 +62,28 @@ function hasChanges(
 }
 
 const GeneralSettingsPage = (): React.ReactElement => {
+  const growthbook = useGrowthBook<AppFeatures>();
+
   const {
     refreshOrganization,
     settings,
     organization,
-    apiKeys,
-    accountPlan,
-    license,
+    hasCommercialFeature,
   } = useUser();
-  const [editOpen, setEditOpen] = useState(false);
-  const [editLicenseOpen, setEditLicenseOpen] = useState(false);
   const [saveMsg, setSaveMsg] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const [originalValue, setOriginalValue] = useState<OrganizationSettings>({});
+  const [cronString, setCronString] = useState("");
+  const [
+    codeRefsBranchesToFilterStr,
+    setCodeRefsBranchesToFilterStr,
+  ] = useState<string>("");
+  const displayCurrency = useCurrency();
 
-  const permissions = usePermissions();
+  const hasStickyBucketFeature = hasCommercialFeature("sticky-bucketing");
 
   const { metricDefaults } = useOrganizationMetricDefaults();
-
-  const [upgradeModal, setUpgradeModal] = useState(false);
-  const showUpgradeButton = ["oss", "starter"].includes(accountPlan);
-  const licensePlanText =
-    (accountPlan === "enterprise"
-      ? "Enterprise"
-      : accountPlan === "pro"
-      ? "Pro"
-      : accountPlan === "pro_sso"
-      ? "Pro + SSO"
-      : "Starter") + (license && license.trial ? " (trial)" : "");
-
-  const form = useForm<OrganizationSettings>({
+  const form = useForm<OrganizationSettingsWithMetricDefaults>({
     defaultValues: {
       visualEditorEnabled: false,
       pastExperimentsMinLength: 6,
@@ -81,29 +103,79 @@ const GeneralSettingsPage = (): React.ReactElement => {
         //startDate?: Date;
       },
       metricDefaults: {
+        priorSettings: metricDefaults.priorSettings,
         minimumSampleSize: metricDefaults.minimumSampleSize,
         maxPercentageChange: metricDefaults.maxPercentageChange * 100,
         minPercentageChange: metricDefaults.minPercentageChange * 100,
+        targetMDE: metricDefaults.targetMDE * 100,
       },
       updateSchedule: {
         type: "stale",
         hours: 6,
         cron: "0 */6 * * *",
       },
+      runHealthTrafficQuery: false,
+      srmThreshold: DEFAULT_SRM_THRESHOLD,
       multipleExposureMinPercent: 0.01,
-      statsEngine: "bayesian",
+      confidenceLevel: 0.95,
+      pValueThreshold: DEFAULT_P_VALUE_THRESHOLD,
+      pValueCorrection: null,
+      statsEngine: DEFAULT_STATS_ENGINE,
+      regressionAdjustmentEnabled: DEFAULT_REGRESSION_ADJUSTMENT_ENABLED,
+      regressionAdjustmentDays: DEFAULT_REGRESSION_ADJUSTMENT_DAYS,
+      sequentialTestingEnabled: false,
+      sequentialTestingTuningParameter: DEFAULT_SEQUENTIAL_TESTING_TUNING_PARAMETER,
+      attributionModel: "firstExposure",
+      displayCurrency,
+      secureAttributeSalt: "",
+      killswitchConfirmation: false,
+      requireReviews: [
+        {
+          requireReviewOn: false,
+          resetReviewOnChange: false,
+          environments: [],
+          projects: [],
+        },
+      ],
+      defaultDataSource: settings.defaultDataSource || "",
+      testQueryDays: DEFAULT_TEST_QUERY_DAYS,
+      disableMultiMetricQueries: false,
+      useStickyBucketing: false,
+      useFallbackAttributes: false,
+      codeReferencesEnabled: false,
+      codeRefsBranchesToFilter: [],
+      codeRefsPlatformUrl: "",
+      featureKeyExample: "",
+      featureRegexValidator: "",
+      featureListMarkdown: settings.featureListMarkdown || "",
+      featurePageMarkdown: settings.featurePageMarkdown || "",
+      experimentListMarkdown: settings.experimentListMarkdown || "",
+      metricListMarkdown: settings.metricListMarkdown || "",
+      metricPageMarkdown: settings.metricPageMarkdown || "",
+      banditScheduleValue: settings.banditScheduleValue ?? 1,
+      banditScheduleUnit: settings.banditScheduleUnit ?? "days",
+      banditBurnInValue: settings.banditBurnInValue ?? 1,
+      banditBurnInUnit: settings.banditBurnInUnit ?? "days",
+      requireExperimentTemplates: settings.requireExperimentTemplates ?? false,
+      experimentMinLengthDays:
+        settings.experimentMinLengthDays ?? DEFAULT_EXPERIMENT_MIN_LENGTH_DAYS,
+      experimentMaxLengthDays:
+        settings.experimentMaxLengthDays ?? DEFAULT_EXPERIMENT_MAX_LENGTH_DAYS,
+      decisionFrameworkEnabled:
+        settings.decisionFrameworkEnabled ?? DEFAULT_DECISION_FRAMEWORK_ENABLED,
     },
   });
   const { apiCall } = useAuth();
-
-  const value = {
+  const value: OrganizationSettingsWithMetricDefaults = {
     visualEditorEnabled: form.watch("visualEditorEnabled"),
     pastExperimentsMinLength: form.watch("pastExperimentsMinLength"),
     metricAnalysisDays: form.watch("metricAnalysisDays"),
     metricDefaults: {
+      priorSettings: form.watch("metricDefaults.priorSettings"),
       minimumSampleSize: form.watch("metricDefaults.minimumSampleSize"),
       maxPercentageChange: form.watch("metricDefaults.maxPercentageChange"),
       minPercentageChange: form.watch("metricDefaults.minPercentageChange"),
+      targetMDE: form.watch("metricDefaults.targetMDE"),
     },
     // customization:
     customized: form.watch("customized"),
@@ -112,12 +184,30 @@ const GeneralSettingsPage = (): React.ReactElement => {
     secondaryColor: form.watch("secondaryColor"),
     northStar: form.watch("northStar"),
     updateSchedule: form.watch("updateSchedule"),
+    runHealthTrafficQuery: form.watch("runHealthTrafficQuery"),
+    srmThreshold: form.watch("srmThreshold"),
     multipleExposureMinPercent: form.watch("multipleExposureMinPercent"),
     statsEngine: form.watch("statsEngine"),
+    confidenceLevel: form.watch("confidenceLevel"),
+    pValueThreshold: form.watch("pValueThreshold"),
+    pValueCorrection: form.watch("pValueCorrection"),
+    regressionAdjustmentEnabled: form.watch("regressionAdjustmentEnabled"),
+    regressionAdjustmentDays: form.watch("regressionAdjustmentDays"),
+    sequentialTestingEnabled: form.watch("sequentialTestingEnabled"),
+    sequentialTestingTuningParameter: form.watch(
+      "sequentialTestingTuningParameter"
+    ),
+    attributionModel: form.watch("attributionModel"),
+    displayCurrency: form.watch("displayCurrency"),
+    secureAttributeSalt: form.watch("secureAttributeSalt"),
+    killswitchConfirmation: form.watch("killswitchConfirmation"),
+    defaultDataSource: form.watch("defaultDataSource"),
+    useStickyBucketing: form.watch("useStickyBucketing"),
+    useFallbackAttributes: form.watch("useFallbackAttributes"),
+    codeReferencesEnabled: form.watch("codeReferencesEnabled"),
+    codeRefsBranchesToFilter: form.watch("codeRefsBranchesToFilter"),
+    codeRefsPlatformUrl: form.watch("codeRefsPlatformUrl"),
   };
-
-  const [cronString, setCronString] = useState("");
-
   function updateCronString(cron?: string) {
     cron = cron || value.updateSchedule?.cron || "";
 
@@ -136,40 +226,123 @@ const GeneralSettingsPage = (): React.ReactElement => {
     if (settings) {
       const newVal = { ...form.getValues() };
       Object.keys(newVal).forEach((k) => {
-        newVal[k] = settings?.[k] || newVal[k];
-
-        // Existing values are stored as a multiplier, e.g. 50% on the UI is stored as 0.5
-        // Transform these values from the UI format
         if (k === "metricDefaults") {
-          newVal.metricDefaults = {
-            ...newVal.metricDefaults,
-            maxPercentageChange:
-              newVal.metricDefaults.maxPercentageChange * 100,
-            minPercentageChange:
-              newVal.metricDefaults.minPercentageChange * 100,
+          // Metric defaults are nested, so take existing metric defaults only if
+          // they exist and are not empty
+          const existingMaxChange = settings?.[k]?.maxPercentageChange;
+          const existingMinChange = settings?.[k]?.minPercentageChange;
+          const existingTargetMDE = settings?.[k]?.targetMDE;
+          newVal[k] = {
+            ...newVal[k],
+            ...settings?.[k],
+            // Existing values are stored as a multiplier, e.g. 50% on the UI is stored as 0.5
+            // Transform these values from the UI format
+            ...(existingMaxChange !== undefined
+              ? {
+                  maxPercentageChange: existingMaxChange * 100,
+                }
+              : {}),
+            ...(existingMinChange !== undefined
+              ? {
+                  minPercentageChange: existingMinChange * 100,
+                }
+              : {}),
+            ...(existingTargetMDE !== undefined
+              ? {
+                  targetMDE: existingTargetMDE * 100,
+                }
+              : {}),
           };
+        } else {
+          newVal[k] = settings?.[k] || newVal[k];
+        }
+
+        if (k === "confidenceLevel" && (newVal?.confidenceLevel ?? 0.95) <= 1) {
+          newVal.confidenceLevel = (newVal.confidenceLevel ?? 0.95) * 100;
+        }
+        if (
+          k === "multipleExposureMinPercent" &&
+          (newVal?.multipleExposureMinPercent ?? 0.01) <= 1
+        ) {
+          newVal.multipleExposureMinPercent =
+            (newVal.multipleExposureMinPercent ?? 0.01) * 100;
+        }
+
+        if (k === "useStickyBucketing") {
+          newVal.useStickyBucketing = hasStickyBucketFeature
+            ? newVal.useStickyBucketing
+            : false;
         }
       });
       form.reset(newVal);
       setOriginalValue(newVal);
       updateCronString(newVal.updateSchedule?.cron || "");
+      if (newVal.codeRefsBranchesToFilter) {
+        setCodeRefsBranchesToFilterStr(
+          newVal.codeRefsBranchesToFilter.join(", ")
+        );
+      }
     }
   }, [settings]);
 
+  useEffect(() => {
+    form.setValue(
+      "codeRefsBranchesToFilter",
+      codeRefsBranchesToFilterStr
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+    );
+  }, [codeRefsBranchesToFilterStr]);
+
   const ctaEnabled = hasChanges(value, originalValue);
 
-  const saveSettings = async () => {
-    const enabledVisualEditor =
-      !settings?.visualEditorEnabled && value.visualEditorEnabled;
-
+  const saveSettings = form.handleSubmit(async (value) => {
     const transformedOrgSettings = {
       ...value,
       metricDefaults: {
         ...value.metricDefaults,
         maxPercentageChange: value.metricDefaults.maxPercentageChange / 100,
         minPercentageChange: value.metricDefaults.minPercentageChange / 100,
+        targetMDE: value.metricDefaults.targetMDE / 100,
       },
+      confidenceLevel: (value.confidenceLevel ?? 0.95) / 100,
+      multipleExposureMinPercent:
+        (value.multipleExposureMinPercent ?? 0.01) / 100,
     };
+
+    // Make sure the feature key example is valid
+    if (
+      transformedOrgSettings.featureKeyExample &&
+      !transformedOrgSettings.featureKeyExample.match(/^[a-zA-Z0-9_.:|-]+$/)
+    ) {
+      throw new Error(
+        "Feature key examples can only include letters, numbers, hyphens, and underscores."
+      );
+    }
+
+    // If the regex validator exists, then the feature key example must match the regex and be valid.
+    if (transformedOrgSettings.featureRegexValidator) {
+      if (
+        !transformedOrgSettings.featureKeyExample ||
+        !transformedOrgSettings.featureRegexValidator
+      ) {
+        throw new Error(
+          "Feature key example must not be empty when a regex validator is defined."
+        );
+      }
+
+      const regexValidator = transformedOrgSettings.featureRegexValidator;
+      if (
+        !new RegExp(regexValidator).test(
+          transformedOrgSettings.featureKeyExample
+        )
+      ) {
+        throw new Error(
+          `Feature key example does not match the regex validator. '${transformedOrgSettings.featureRegexValidator}' Example: '${transformedOrgSettings.featureKeyExample}'`
+        );
+      }
+    }
 
     await apiCall(`/organization`, {
       method: "PUT",
@@ -179,548 +352,133 @@ const GeneralSettingsPage = (): React.ReactElement => {
     });
     refreshOrganization();
 
-    // Track usage of the Visual Editor
-    if (enabledVisualEditor) {
-      track("Enable Visual Editor");
-    }
-
     // show the user that the settings have saved:
     setSaveMsg(true);
-  };
-
-  if (!permissions.organizationSettings) {
-    return (
-      <div className="container pagecontents">
-        <div className="alert alert-danger">
-          You do not have access to view this page.
-        </div>
-      </div>
-    );
-  }
+  });
 
   return (
-    <>
-      {upgradeModal && (
-        <UpgradeModal
-          close={() => setUpgradeModal(false)}
-          reason=""
-          source="settings"
-        />
-      )}
-
-      <div className="container-fluid pagecontents">
-        {saveMsg && (
-          <TempMessage
-            close={() => {
-              setSaveMsg(false);
-            }}
-          >
-            Settings saved
-          </TempMessage>
-        )}
-        {editOpen && (
-          <EditOrganizationModal
-            name={organization.name}
-            close={() => setEditOpen(false)}
-            mutate={refreshOrganization}
+    <FormProvider {...form}>
+      <Box className="container-fluid pagecontents" mb="4">
+        <Heading as="h1" size="5" mb="3">
+          General Settings
+        </Heading>
+        <Box mb="5">
+          <OrganizationAndLicenseSettings
+            org={organization}
+            refreshOrg={refreshOrganization}
           />
-        )}
-        {editLicenseOpen && (
-          <EditLicenseModal
-            close={() => setEditLicenseOpen(false)}
-            mutate={refreshOrganization}
-          />
-        )}
-        <h1>General Settings</h1>
+        </Box>
 
-        <div className="mb-1">
-          <div className=" bg-white p-3 border">
-            <div className="row mb-0">
-              <div className="col-sm-3">
-                <h4>Organization</h4>
-              </div>
-              <div className="col-sm-9">
-                <div className="form-group row">
-                  <div className="col-sm-12">
-                    <strong>Name: </strong> {organization.name}{" "}
-                    <a
-                      href="#"
-                      className="pl-1"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        setEditOpen(true);
-                      }}
-                    >
-                      <FaPencilAlt />
-                    </a>
-                  </div>
-                </div>
-                <div className="form-group row">
-                  <div className="col-sm-12">
-                    <strong>Owner:</strong> {organization.ownerEmail}
-                  </div>
-                </div>
-              </div>
-            </div>
-            <div className="divider border-bottom mb-3 mt-3" />
-            <div className="row">
-              <div className="col-sm-3">
-                <h4>License</h4>
-              </div>
-              <div className="col-sm-9">
-                <div className="form-group row mb-2">
-                  <div className="col-sm-12">
-                    <strong>Plan type: </strong> {licensePlanText}{" "}
-                  </div>
-                </div>
-                {showUpgradeButton && (
-                  <div className="form-group row mb-1">
-                    <div className="col-sm-12">
-                      <button
-                        className="btn btn-premium font-weight-normal"
-                        onClick={() => setUpgradeModal(true)}
-                      >
-                        {accountPlan === "oss" ? (
-                          <>
-                            Try Enterprise <GBPremiumBadge />
-                          </>
-                        ) : (
-                          <>
-                            Upgrade to Pro <GBPremiumBadge />
-                          </>
-                        )}
-                      </button>
-                    </div>
-                  </div>
-                )}
-                {!isCloud() && permissions.manageBilling && (
-                  <div className="form-group row mt-3 mb-0">
-                    <div className="col-sm-4">
-                      <div>
-                        <strong>License Key: </strong>
-                      </div>
-                      <div
-                        className="d-inline-block mt-1 mb-2 text-center text-muted"
-                        style={{
-                          width: 100,
-                          borderBottom: "1px solid #cccccc",
-                          pointerEvents: "none",
-                          overflow: "hidden",
-                          verticalAlign: "top",
-                        }}
-                      >
-                        {license ? "***************" : "(none)"}
-                      </div>{" "}
-                      <a
-                        href="#"
-                        className="pl-1"
-                        onClick={(e) => {
-                          e.preventDefault();
-                          setEditLicenseOpen(true);
-                        }}
-                      >
-                        <FaPencilAlt />
-                      </a>
-                    </div>
-                    {license && (
-                      <>
-                        <div className="col-sm-2">
-                          <div>Issued:</div>
-                          <span className="text-muted">{license.iat}</span>
-                        </div>
-                        <div className="col-sm-2">
-                          <div>Expires:</div>
-                          <span className="text-muted">{license.exp}</span>
-                        </div>
-                        <div className="col-sm-2">
-                          <div>Seats:</div>
-                          <span className="text-muted">{license.qty}</span>
-                        </div>
-                      </>
+        <Tabs defaultValue="experiment" persistInURL={true}>
+          <StickyTabsList>
+            <TabsTrigger value="experiment">Experiment Settings</TabsTrigger>
+            <TabsTrigger value="feature">Feature Settings</TabsTrigger>
+            <TabsTrigger value="metrics">Metrics &amp; Data</TabsTrigger>
+            <TabsTrigger value="import">Import &amp; Export</TabsTrigger>
+            <TabsTrigger value="custom">
+              <PremiumTooltip commercialFeature="custom-markdown">
+                Custom Markdown
+              </PremiumTooltip>
+            </TabsTrigger>
+          </StickyTabsList>
+          <Box mt="4">
+            <TabsContent value="experiment">
+              <ExperimentSettings
+                cronString={cronString}
+                updateCronString={updateCronString}
+              />
+              {growthbook.isOn("bandits") && (
+                <Frame mb="4">
+                  <BanditSettings page="org-settings" />
+                </Frame>
+              )}
+            </TabsContent>
+
+            <TabsContent value="feature">
+              <FeaturesSettings />
+            </TabsContent>
+
+            <TabsContent value="metrics">
+              <>
+                <MetricsSettings />
+                <DatasourceSettings />
+                <NorthStarMetricSettings />
+              </>
+            </TabsContent>
+
+            <TabsContent value="import">
+              <ImportSettings
+                hasFileConfig={hasFileConfig()}
+                isCloud={isCloud()}
+                settings={settings}
+                refreshOrg={refreshOrganization}
+              />
+            </TabsContent>
+
+            <TabsContent value="custom">
+              <Frame>
+                <Flex>
+                  <Box width="300px">
+                    <PremiumTooltip commercialFeature="custom-markdown">
+                      Custom Markdown
+                    </PremiumTooltip>
+                  </Box>
+                  <Box>
+                    {hasCommercialFeature("custom-markdown") ? (
+                      <Link href="/settings/custom-markdown">
+                        View Custom Markdown Settings
+                      </Link>
+                    ) : (
+                      <span className="text-muted">
+                        View Custom Markdown Settings
+                      </span>
                     )}
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
+                  </Box>
+                </Flex>
+              </Frame>
+            </TabsContent>
+          </Box>
+        </Tabs>
+      </Box>
 
-          <div className="my-3 bg-white p-3 border">
-            <div className="row">
-              <div className="col-sm-3">
-                <h4>North Star Metrics</h4>
-              </div>
-              <div className="col-sm-9">
-                <p>
-                  North stars are metrics your team is focused on improving.
-                  These metrics are shown on the home page with the experiments
-                  that have the metric as a goal.
-                </p>
-                <div className={"form-group"}>
-                  <div className="my-3">
-                    <div className="form-group">
-                      <label>Metric(s)</label>
-                      <MetricsSelector
-                        selected={form.watch("northStar.metricIds")}
-                        onChange={(metrics) =>
-                          form.setValue("northStar.metricIds", metrics)
-                        }
-                      />
-                    </div>
-                    <Field
-                      label="Title"
-                      {...form.register("northStar.title")}
-                    />
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {hasFileConfig() && (
-            <div className="alert alert-info my-3">
-              The below settings are controlled through your{" "}
-              <code>config.yml</code> file and cannot be changed through the web
-              UI.{" "}
-              <DocLink
-                docSection="config_organization_settings"
-                className="font-weight-bold"
+      <Box
+        className="bg-main-color position-sticky w-100 py-3 border-top"
+        style={{ bottom: 0, height: 70, zIndex: 840 }}
+      >
+        <Box className="container-fluid pagecontents d-flex">
+          <Flex flexGrow="1" gap="3" align="end">
+            {submitError && (
+              <Box>
+                <HelperText status="error">{submitError}</HelperText>
+              </Box>
+            )}
+            {saveMsg && (
+              <TempMessage
+                className="mb-0 py-2"
+                close={() => {
+                  setSaveMsg(false);
+                }}
               >
-                View Documentation
-              </DocLink>
-              .
-            </div>
-          )}
-          {!hasFileConfig() && (
-            <div className="alert alert-info my-3">
-              <h3>Import/Export config.yml</h3>
-              <p>
-                {isCloud()
-                  ? "GrowthBook Cloud stores"
-                  : "You are currently storing"}{" "}
-                all organization settings, data sources, metrics, and dimensions
-                in a database.
-              </p>
-              <p>
-                You can import/export these settings to a{" "}
-                <code>config.yml</code> file to more easily move between
-                GrowthBook Cloud accounts and/or self-hosted environments.{" "}
-                <DocLink docSection="config_yml" className="font-weight-bold">
-                  Learn More
-                </DocLink>
-              </p>
-              <div className="row mb-3">
-                <div className="col-auto">
-                  <BackupConfigYamlButton settings={settings} />
-                </div>
-                <div className="col-auto">
-                  <RestoreConfigYamlButton
-                    settings={settings}
-                    mutate={refreshOrganization}
-                  />
-                </div>
-              </div>
-              <div className="text-muted">
-                <strong>Note:</strong> For security reasons, the exported file
-                does not include data source connection secrets such as
-                passwords. You must edit the file and add these yourself.
-              </div>
-            </div>
-          )}
-
-          <div className="bg-white p-3 border">
-            <div className="row">
-              <div className="col-sm-3">
-                <h4>
-                  Visual Editor{" "}
-                  <span className="badge badge-warning">beta</span>
-                </h4>
-              </div>
-              <div className="col-sm-9 pb-3">
-                <p>
-                  {`The Visual Editor allows non-technical users to create and start
-                  experiments in production without writing any code. `}
-                  <DocLink docSection="visual_editor">
-                    View Documentation
-                  </DocLink>
-                </p>
-                <div>
-                  <div className="form-check">
-                    <input
-                      type="checkbox"
-                      disabled={hasFileConfig()}
-                      className="form-check-input "
-                      {...form.register("visualEditorEnabled")}
-                      id="checkbox-visualeditor"
-                    />
-
-                    <label
-                      htmlFor="checkbox-visualeditor"
-                      className="form-check-label"
-                    >
-                      Enable Visual Editor
-                    </label>
-                  </div>
-                </div>
-                {value.visualEditorEnabled && settings?.visualEditorEnabled && (
-                  <div className="bg-light p-3 my-3 border rounded">
-                    <h5 className="font-weight-bold">Setup Instructions</h5>
-                    <VisualEditorInstructions
-                      apiKeys={apiKeys}
-                      mutate={refreshOrganization}
-                    />
-                  </div>
-                )}
-              </div>
-            </div>
-
-            <div className="divider border-bottom mb-3 mt-3" />
-
-            <div className="row">
-              <div className="col-sm-3">
-                <h4>Experiment Settings</h4>
-              </div>
-
-              <div className="col-sm-9 form-inline flex-column align-items-start">
-                <Field
-                  label="Minimum experiment length (in days) when importing past
-                  experiments"
-                  type="number"
-                  className="ml-2"
-                  containerClassName="mb-3"
-                  append="days"
-                  step="1"
-                  min="0"
-                  max="31"
-                  disabled={hasFileConfig()}
-                  {...form.register("pastExperimentsMinLength", {
-                    valueAsNumber: true,
-                  })}
-                />
-
-                <Field
-                  label="Warn when this percent of experiment users are in multiple variations"
-                  type="number"
-                  step="any"
-                  min="0"
-                  max="1"
-                  className="ml-2"
-                  containerClassName="mb-3"
-                  disabled={hasFileConfig()}
-                  helpText={<span className="ml-2">from 0 to 1</span>}
-                  {...form.register("multipleExposureMinPercent", {
-                    valueAsNumber: true,
-                  })}
-                />
-
-                <div className="mb-3 form-group flex-column align-items-start">
-                  <Field
-                    label="Experiment Auto-Update Frequency"
-                    className="ml-2"
-                    containerClassName="mb-2 mr-2"
-                    disabled={hasFileConfig()}
-                    options={[
-                      {
-                        display: "When results are X hours old",
-                        value: "stale",
-                      },
-                      {
-                        display: "Cron Schedule",
-                        value: "cron",
-                      },
-                      {
-                        display: "Never",
-                        value: "never",
-                      },
-                    ]}
-                    {...form.register("updateSchedule.type")}
-                  />
-                  {value.updateSchedule?.type === "stale" && (
-                    <div className="bg-light p-3 border">
-                      <Field
-                        label="Refresh when"
-                        append="hours old"
-                        type="number"
-                        step={1}
-                        min={1}
-                        max={168}
-                        className="ml-2"
-                        disabled={hasFileConfig()}
-                        {...form.register("updateSchedule.hours", {
-                          valueAsNumber: true,
-                        })}
-                      />
-                    </div>
-                  )}
-                  {value.updateSchedule?.type === "cron" && (
-                    <div className="bg-light p-3 border">
-                      <Field
-                        label="Cron String"
-                        className="ml-2"
-                        disabled={hasFileConfig()}
-                        {...form.register("updateSchedule.cron")}
-                        placeholder="0 */6 * * *"
-                        onFocus={(e) => {
-                          updateCronString(e.target.value);
-                        }}
-                        onBlur={(e) => {
-                          updateCronString(e.target.value);
-                        }}
-                        helpText={<span className="ml-2">{cronString}</span>}
-                      />
-                    </div>
-                  )}
-                </div>
-
-                <Field
-                  label="Statistics Engine"
-                  className="ml-2"
-                  options={[
-                    {
-                      display: "Bayesian",
-                      value: "bayesian",
-                    },
-                    {
-                      display: "Frequentist",
-                      value: "frequentist",
-                    },
-                  ]}
-                  {...form.register("statsEngine")}
-                />
-              </div>
-            </div>
-
-            <div className="divider border-bottom mb-3 mt-3" />
-
-            <div className="row">
-              <div className="col-sm-3">
-                <h4>Metrics Settings</h4>
-              </div>
-              <div className="col-sm-9">
-                <div className="form-inline">
-                  <Field
-                    label="Amount of historical data to include when analyzing metrics"
-                    append="days"
-                    className="ml-2"
-                    containerClassName="mb-3"
-                    disabled={hasFileConfig()}
-                    options={[7, 14, 30, 90, 180, 365]}
-                    {...form.register("metricAnalysisDays", {
-                      valueAsNumber: true,
-                    })}
-                  />
-                </div>
-
-                {/* region Metrics Behavior Defaults */}
-                <>
-                  <h5 className="mt-3">Metrics Behavior Defaults</h5>
-                  <p>
-                    These are the pre-configured default values that will be
-                    used when configuring metrics. You can always change these
-                    values on a per-metric basis.
-                  </p>
-
-                  {/* region Minimum Sample Size */}
-                  <div>
-                    <div className="form-inline">
-                      <Field
-                        label="Minimum Sample Size"
-                        type="number"
-                        className="ml-2"
-                        containerClassName="mt-2"
-                        disabled={hasFileConfig()}
-                        {...form.register("metricDefaults.minimumSampleSize", {
-                          valueAsNumber: true,
-                        })}
-                      />
-                    </div>
-                    <p>
-                      <small className="text-muted mb-3">
-                        The total count required in an experiment variation
-                        before showing results
-                      </small>
-                    </p>
-                  </div>
-                  {/* endregion Minimum Sample Size */}
-
-                  {/* region Maximum Percentage Change */}
-                  <div>
-                    <div className="form-inline">
-                      <Field
-                        label="Maximum Percentage Change"
-                        type="number"
-                        append="%"
-                        className="ml-2"
-                        containerClassName="mt-2"
-                        disabled={hasFileConfig()}
-                        {...form.register(
-                          "metricDefaults.maxPercentageChange",
-                          {
-                            valueAsNumber: true,
-                          }
-                        )}
-                      />
-                    </div>
-                    <p>
-                      <small className="text-muted mb-3">
-                        An experiment that changes the metric by more than this
-                        percent will be flagged as suspicious
-                      </small>
-                    </p>
-                  </div>
-                  {/* endregion Maximum Percentage Change */}
-
-                  {/* region Minimum Percentage Change */}
-                  <div>
-                    <div className="form-inline">
-                      <Field
-                        label="Minimum Percentage Change"
-                        type="number"
-                        append="%"
-                        className="ml-2"
-                        containerClassName="mt-2"
-                        disabled={hasFileConfig()}
-                        {...form.register(
-                          "metricDefaults.minPercentageChange",
-                          {
-                            valueAsNumber: true,
-                          }
-                        )}
-                      />
-                    </div>
-                    <p>
-                      <small className="text-muted mb-3">
-                        An experiment that changes the metric by less than this
-                        percent will be considered a draw
-                      </small>
-                    </p>
-                  </div>
-                  {/* endregion Minimum Percentage Change */}
-                </>
-                {/* endregion Metrics Behavior Defaults */}
-              </div>
-            </div>
-            <div className="divider border-bottom mb-3 mt-3" />
-
-            <div className="row">
-              <div className="col-12">
-                <div className=" d-flex flex-row-reverse">
-                  <Button
-                    color={"primary"}
-                    disabled={!ctaEnabled}
-                    onClick={async () => {
-                      if (!ctaEnabled) return;
-                      await saveSettings();
-                    }}
-                  >
-                    Save
-                  </Button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </>
+                Settings saved
+              </TempMessage>
+            )}
+          </Flex>
+          <Box style={{ marginRight: "85px" }}>
+            <Button
+              disabled={!ctaEnabled}
+              onClick={async () => {
+                setSubmitError(null);
+                if (!ctaEnabled) return;
+                await saveSettings();
+              }}
+              setError={setSubmitError}
+            >
+              Save All
+            </Button>
+          </Box>
+        </Box>
+      </Box>
+    </FormProvider>
   );
 };
 
